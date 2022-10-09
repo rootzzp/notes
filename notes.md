@@ -282,4 +282,4 @@ P&=(I-KH)\overline{P}
 \end{aligned}
 $$
 
-![BiFPN](images/deeplearning/feature%20integration/BiFPN.png)
+![BiFPN](images/deeplearning/feature_integration/BiFPN.png)
