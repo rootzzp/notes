@@ -1,7 +1,7 @@
 # 特征聚合
 
-# FPN系列
-其结构图如下所示：
+## FPN系列
+其结构图如下所示：\
 ![FPN](images/deeplearning/feature_integration/fpn.png)
 ## BiFPN
 其结构图如下所示：
