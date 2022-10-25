@@ -1,5 +1,17 @@
-# 特征聚合
+# 主干网络
+## CSPNET(Cross Stage Partial Network)
+主要目的：
+### 1.增强CNN的学习能力
+现有的CNN在轻量化后精度大大降低，所以希望增强CNN的学习能力，使其在轻量化的同时保持足够的精度。CSPNet 可以很容易地应用于 ResNet、ResNeXt 和 DenseNet。在上述网络上应用CSPNet后，计算量可以减少10%到20%，而且在准确性方面更优
+### 2.降低bottlenecks的计算量
+bottlenecks计算量太高会导致完成推理过程需要更多的周期，或者一些计算单元经常空闲。因此，希望能够将CNN中每一层的计算量平均分配，从而有效提升各计算单元的利用率，从而减少不必要的能耗
+### 3.降低内存占用
+采用跨通道池化在特征金字塔生成过程中压缩特征图
 
+其结构图如下所示为CSPDenseNet网络：\
+![CSPDenseNet](images/deeplearning/backbone/CSPDenseNet.png)
+
+# 特征聚合
 ## FPN系列
 其结构图如下所示：\
 ![FPN](images/deeplearning/feature_integration/fpn.png)\
