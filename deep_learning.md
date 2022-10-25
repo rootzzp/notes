@@ -25,3 +25,8 @@ cite: [paper](http://arxiv.org/abs/1911.09070)
 其中SFAM模块对不同级别的特征金字塔进行融合，将金字塔中同尺度的特征图concat起来并利用SE模块进行注意力加权处理，其结构图如下所示：\
 ![SFAM](images/deeplearning/feature_integration/SFAM.png)
 cite: [paper](http://arxiv.org/abs/1811.04533)
+
+## ASFF(Adaptively Spatial Feature Fusion)
+与以前使用元素累积和或连接来集成多级特征的方法不同，此方法的关键思想是自适应地学习每个尺度的特征图融合的空间权重，它由两个步骤组成：同尺度缩放和自适应融合。如下图所示，对ASFF3模块，有3个学习参数，分别是:$\alpha,\beta,\gamma$,代表了不同尺度特征的权重，图中$X^{1\rightarrow3}$代表第1级特征图缩放到第3级特征图相同尺度后的特征图，依次类推$X^{2\rightarrow3}$代表第2级特征图缩放到第3级特征图相同尺度后的特征图。
+![ASFF](images/deeplearning/feature_integration/ASFF.png)
+cite: [paper](http://arxiv.org/abs/1911.09516)
