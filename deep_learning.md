@@ -37,7 +37,7 @@ cite: [paper](http://arxiv.org/abs/1612.03144)
 ![bottom-up path augmentation](images/deeplearning/feature_integration/bottom_up.png)\
 cite: [paper](http://arxiv.org/abs/1803.01534)
 ## BiFPN
-其结构图如下所示：
+其结构图如下所示：\
 ![BiFPN](images/deeplearning/feature_integration/BiFPN.png)
 特点：
 1.移除单输入边的结点：因为单输入边的结点没有进行特征融合，故具有的信息比较少，对于最后的融合没有什么贡献度，相反，移除还能减少计算量。
