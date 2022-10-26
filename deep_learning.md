@@ -1,22 +1,50 @@
+<!-- TOC -->
+
+- [主干网络](#%E4%B8%BB%E5%B9%B2%E7%BD%91%E7%BB%9C)
+    - [CSPNetCross Stage Partial Network](#cspnetcross-stage-partial-network)
+        - [增强CNN的学习能力](#%E5%A2%9E%E5%BC%BAcnn%E7%9A%84%E5%AD%A6%E4%B9%A0%E8%83%BD%E5%8A%9B)
+        - [降低bottlenecks的计算量](#%E9%99%8D%E4%BD%8Ebottlenecks%E7%9A%84%E8%AE%A1%E7%AE%97%E9%87%8F)
+        - [降低内存占用](#%E9%99%8D%E4%BD%8E%E5%86%85%E5%AD%98%E5%8D%A0%E7%94%A8)
+            - [部分稠密块](#%E9%83%A8%E5%88%86%E7%A8%A0%E5%AF%86%E5%9D%97)
+            - [部分过渡层](#%E9%83%A8%E5%88%86%E8%BF%87%E6%B8%A1%E5%B1%82)
+    - [RegNetsCross Stage Partial Network](#regnetscross-stage-partial-network)
+- [特征聚合](#%E7%89%B9%E5%BE%81%E8%81%9A%E5%90%88)
+    - [FPN系列](#fpn%E7%B3%BB%E5%88%97)
+    - [PANet](#panet)
+    - [BiFPN](#bifpn)
+    - [SFAMScale-wise Feature Aggregation Module](#sfamscale-wise-feature-aggregation-module)
+    - [ASFFAdaptively Spatial Feature Fusion](#asffadaptively-spatial-feature-fusion)
+- [增强感受野的模块](#%E5%A2%9E%E5%BC%BA%E6%84%9F%E5%8F%97%E9%87%8E%E7%9A%84%E6%A8%A1%E5%9D%97)
+    - [SPPspatial pyramid pooling layer](#sppspatial-pyramid-pooling-layer)
+    - [ASPPAtrous Spatial Pyramid Pooling](#asppatrous-spatial-pyramid-pooling)
+    - [RFBReceptive Field Block](#rfbreceptive-field-block)
+
+<!-- /TOC -->
 # 主干网络
+
 ## CSPNet(Cross Stage Partial Network)
 设计思想：
 减少计算量的同时实现更丰富的梯度组合。这个目标是通过将基础层的特征图划分为两部分，然后通过提出的跨阶段层次结构合并它们来实现的。其中最主要概念是通过拆分梯度流使梯度流通过不同的网络路径传播
 
 主要目的：
-### 1.增强CNN的学习能力
+
+### 增强CNN的学习能力
 现有的CNN在轻量化后精度大大降低，所以希望增强CNN的学习能力，使其在轻量化的同时保持足够的精度。CSPNet 可以很容易地应用于 ResNet、ResNeXt 和 DenseNet。在上述网络上应用CSPNet后，计算量可以减少10%到20%，而且在准确性方面更优
-### 2.降低bottlenecks的计算量
+
+### 降低bottlenecks的计算量
 bottlenecks计算量太高会导致完成推理过程需要更多的周期，或者一些计算单元经常空闲。因此，希望能够将CNN中每一层的计算量平均分配，从而有效提升各计算单元的利用率，从而减少不必要的能耗
-### 3.降低内存占用
+
+### 降低内存占用
 采用跨通道池化在特征金字塔生成过程中压缩特征图
 
 其结构图如下所示为CSPDenseNet网络：主要由部分稠密块与部分过渡层组成\
 ![CSPDenseNet](images/deeplearning/backbone/CSPDenseNet.png)
+
 #### 部分稠密块
 1.增加梯度路径：通过分块归并策略，可以使梯度路径的数量增加一倍。由于采用了跨阶段策略，可以减轻使用显式特征图copy进行拼接所带来的弊端\
 2.每一层的平衡计算：通常，DenseNet基础层(图中x0)的通道数远大于生长率。由于在部分稠密块中，参与稠密层操作的基础层通道仅占原始数据的一半，可以有效解决近一半的计算瓶颈\
 3.减少内存流量
+
 #### 部分过渡层
 部分过渡层的目的是使梯度组合的差异最大。局部过渡层是一种层次化的特征融合机制，它利用梯度流的聚合策略来防止不同的层学习重复的梯度信息，主要由两种方式：如下图所示：\
 ![feature fusion](images/deeplearning/backbone/csp_feature_fusion.png)
@@ -25,17 +53,24 @@ bottlenecks计算量太高会导致完成推理过程需要更多的周期，或
 
 cite: [paper](http://arxiv.org/abs/1911.11929)
 
+## RegNets(Cross Stage Partial Network)
+
+cite: [paper](http://arxiv.org/abs/2003.13678)
+
 # 特征聚合
+
 ## FPN系列
 其结构图如下所示：\
 ![FPN](images/deeplearning/feature_integration/fpn.png)\
 cite: [paper](http://arxiv.org/abs/1612.03144)
+
 ## PANet
 其结构图如下所示：\
 ![PANet](images/deeplearning/feature_integration/PANet.png)\
 红色虚线箭头表示在FPN算法中，因为要走自底向上的过程，浅层的特征传递到顶层要经过几十甚至一百多个网络层（在FPN中，对应Figure1中那4个蓝色矩形块从下到上分别是ResNet的res2、res3、res4和res5层的输出，层数大概在几十到一百多左右），显然经过这么多层的传递，浅层特征信息丢失会比较厉害。绿色虚线箭头表示作者添加一个bottom-up path augmentation，本身这个结构不到10层，这样浅层特征经过底下原来FPN的lateral connection连接到P2再从P2沿着bottom-up path augmentation传递到顶层，经过的层数就不到10层，能较好地保留浅层特征信息。关于bottom-up path augmentation的具体设计见下图：\
 ![bottom-up path augmentation](images/deeplearning/feature_integration/bottom_up.png)\
 cite: [paper](http://arxiv.org/abs/1803.01534)
+
 ## BiFPN
 其结构图如下所示：\
 ![BiFPN](images/deeplearning/feature_integration/BiFPN.png)
@@ -58,6 +93,7 @@ cite: [paper](http://arxiv.org/abs/1811.04533)
 cite: [paper](http://arxiv.org/abs/1911.09516)
 
 # 增强感受野的模块
+
 ## SPP(spatial pyramid pooling layer)
 ![SPP](images/deeplearning/enhance_receptive_field/SPP.png)
 cite: [paper](http://arxiv.org/abs/1406.4729)
