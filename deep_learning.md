@@ -75,9 +75,9 @@ cite: [paper](http://arxiv.org/abs/1911.11929)
 基于以上，RegNet的设计空间中，约束数量大幅降低，如b可以设置为1，$d_i$，$w_i$可以由($w_a$，$w_0$，$w_m$)根据以下公式计算得到
 
 $$\begin{aligned}
-u_j &= w_0+w_a*j,0\leqslant j<d\\
-u_j &=w_0 *w^{s_j}_m\\
-w_j &=w_0 *w^{s_j}_m\\
+u_j &= w_0+w_a \cdot j,0\leqslant j<d\\
+u_j &=w_0 \cdot w^{s_j}_m\\
+w_j &=w_0 \cdot w^{s_j}_m\\
 \end{aligned}
 $$
 
