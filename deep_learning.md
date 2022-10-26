@@ -7,7 +7,11 @@
         - [降低内存占用](#%E9%99%8D%E4%BD%8E%E5%86%85%E5%AD%98%E5%8D%A0%E7%94%A8)
             - [部分稠密块](#%E9%83%A8%E5%88%86%E7%A8%A0%E5%AF%86%E5%9D%97)
             - [部分过渡层](#%E9%83%A8%E5%88%86%E8%BF%87%E6%B8%A1%E5%B1%82)
-    - [RegNetsCross Stage Partial Network](#regnetscross-stage-partial-network)
+    - [RegNetsDesigning Network Design Spaces](#regnetsdesigning-network-design-spaces)
+        - [概述：](#%E6%A6%82%E8%BF%B0)
+        - [设计空间设计：](#%E8%AE%BE%E8%AE%A1%E7%A9%BA%E9%97%B4%E8%AE%BE%E8%AE%A1)
+            - [AnyNetX](#anynetx)
+            - [RegNet](#regnet)
 - [特征聚合](#%E7%89%B9%E5%BE%81%E8%81%9A%E5%90%88)
     - [FPN系列](#fpn%E7%B3%BB%E5%88%97)
     - [PANet](#panet)
@@ -53,7 +57,24 @@ bottlenecks计算量太高会导致完成推理过程需要更多的周期，或
 
 cite: [paper](http://arxiv.org/abs/1911.11929)
 
-## RegNets(Cross Stage Partial Network)
+## RegNets(Designing Network Design Spaces)
+### 概述：
+$\qquad$提出了一种新的网络设计范式，目标是帮助促进对网络设计的理解，并发现跨环境通用的设计原则。不是专注于设计单个网络实例(NAS技术主要是从预设的搜索空间，也就是一系列设计规则中搜索到单个最优的网络，而此方法的目的在于找到更好的设计规则，从而可推广到其他网络的设计上)，而是设计参数化网络群体的网络设计空间（找出使得网络性能更优的一些规则，按照这些规则可以构建网络族）
+### 设计空间设计：
+$\qquad$设计空间是一组可能的模型架构的参数化集合。设计空间设计类似于人工网络设计，但优于人工的设计。在我们流程的每个步骤中，输入是初始设计空间，输出是更简单或更好模型的精细设计空间。通过采样模型和检查它们的误差分布来表征设计空间的质量。例如，在下图中，我们从初始设计空间A开始，然后应用两个细化步骤来生成设计空间B，然后是C。在这种情况下，C ⊆ B ⊆A（左），误差分布从A改进到B再到C（右）
+![Design Space](images/deeplearning/backbone/DesignSpace.png)
+$\qquad$在此论文中,具体来说，在设计过程的每个步骤中，输入是初始设计空间(AnyNet，该空间为不受任何约束的网络结构)，输出是精细设计空间(RegNet,相比与AnyNet在其允许的网络配置的维度和类型方面进行了压缩，不再是无任何限制)，其中每个设计步骤的目的是发现能够产生更简单或性能更好的模型群体的设计原则\
+$\qquad$总结一下：（1）我们通过从设计空间中采样和训练 n 个模型来生成模型的分布（2）我们计算并绘制误差 EDF 以总结设计空间质量（3）我们可视化设计空间的各种属性和使用经验引导来获得一些规律（4）最后，我们使用这些规律来改进设计空间。
+#### AnyNetX
+$\qquad$其整体网络结构如下所示，由stem、body和head部分组成，stem和head固定，body由4个stage构成，每个stage包含$d_i$个block,每个stage的宽度(通道数)为$w_i$\
+![AnyNetx](images/deeplearning/backbone/AnyNet.png)
+$\qquad$其中，block的结构如下所示，由残差bottleneck和组卷积构成，其中$g_i$为组卷机的组数，$r_i$为bottleneck收缩率，综上整个设计空间包含16个参数(4个stage，每个stage4个参数：$d_i$，$w_i$，$g_i$，$r_i$)\
+![x_block](images/deeplearning/backbone/x_block.png)
+#### RegNet
+$\qquad$对从AnyNetX空间中采样的模块进行一系列分析，得到RegNet\
+$\qquad$其整体趋势是：（1）最佳深度约为20个块（60 层）。这与使用更深的模型用于更高的flops的常见做法形成对比。我们还观察到最佳模型使用 1.0 的瓶颈比率,这有效地消除了瓶颈（在实践中常用）。接下来，我们观察到好的模型的宽度乘数$w_m$约为2.5，与跨阶段加倍宽度的流行配方相似但不完全相同。其余参数（$g_i$、$w_a$、$w_0$）随复杂度增加而增加。（2）我们观察到invert-bottlenexk稍微降低了EDF，并且相对于b = 1 和 g ≥ 1，深depth-wise卷积的性能甚至更差。（3）SE模块是有作用的（4）用activations(所有卷积的输出尺寸)比flops更能表征效率的高低
+
+
 
 cite: [paper](http://arxiv.org/abs/2003.13678)
 
