@@ -68,11 +68,18 @@ cite: [paper](http://arxiv.org/abs/1911.11929)
 #### AnyNetX
 其整体网络结构如下所示，由stem、body和head部分组成，stem和head固定，body由4个stage构成，每个stage包含$d_i$个block,每个stage的宽度(通道数)为$w_i$\
 ![AnyNetx](images/deeplearning/backbone/AnyNet.png)
-其中，block的结构如下所示，由残差bottleneck和组卷积构成，其中$g_i$为组卷机的组数，$r_i$为bottleneck收缩率，综上整个设计空间包含16个参数(4个stage，每个stage4个参数：$d_i$，$w_i$，$g_i$，$r_i$)\
+其中，block的结构如下所示，由残差bottleneck和组卷积构成，其中$g_i$为组卷机的组数，$b_i$为bottleneck收缩率，综上整个设计空间包含16个参数(4个stage，每个stage4个参数：$d_i$，$w_i$，$g_i$，$b_i$)\
 ![x_block](images/deeplearning/backbone/x_block.png)
 #### RegNet
-对从AnyNetX空间中采样的模块进行一系列分析，得到RegNet\
-其整体趋势是：（1）最佳深度约为20个块（60 层）。这与使用更深的模型用于更高的flops的常见做法形成对比。我们还观察到最佳模型使用 1.0 的瓶颈比率,这有效地消除了瓶颈（在实践中常用）。接下来，我们观察到好的模型的宽度乘数$w_m$约为2.5，与跨阶段加倍宽度的流行配方相似但不完全相同。其余参数（$g_i$、$w_a$、$w_0$）随复杂度增加而增加。（2）我们观察到invert-bottlenexk稍微降低了EDF，并且相对于b = 1 和 g ≥ 1，深depth-wise卷积的性能甚至更差。（3）SE模块是有作用的（4）用activations(所有卷积的输出尺寸)比flops更能表征效率的高低
+对从AnyNetX空间中采样的模块进行一系列分析，得到RegNet，其整体趋势是：（1）最佳深度约为20个块（60 层）。这与使用更深的模型用于更高的flops的常见做法形成对比。我们还观察到最佳模型使用 1.0 的瓶颈比率,这有效地消除了瓶颈（在实践中常用）。接下来，我们观察到好的模型的宽度乘数$w_m$约为2.5，与跨阶段加倍宽度的流行配方相似但不完全相同。其余参数（$g_i$、$w_a$、$w_0$）随复杂度增加而增加。（2）我们观察到invert-bottlenexk稍微降低了EDF，并且相对于b = 1 和 g ≥ 1，深depth-wise卷积的性能甚至更差。（3）SE模块是有作用的（4）用activations(所有卷积的输出尺寸)比flops更能表征效率的高低\
+基于以上，RegNet的设计空间中，约束数量大幅降低，如b可以设置为1，$d_i$，$w_i$可以由($w_a$，$w_0$，$w_m$)根据以下公式计算得到
+
+$$\begin{aligned}
+u_j &= w_0+w_a*j,0\leqslant j<d\\
+u_j &=w_0 *w^{s_j}_m\\
+w_j &=w_0 *w^{s_j}_m\\
+\end{aligned}
+$$
 
 
 
