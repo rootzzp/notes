@@ -2,33 +2,53 @@
 
 - [YOLO_V1](#yolo_v1)
     - [Backbone](#backbone)
+    - [Head](#head)
+    - [Loss Function](#loss-function)
 - [YOLO_V2](#yolo_v2)
     - [Backbone](#backbone)
+    - [Head](#head)
 - [YOLO_V3](#yolo_v3)
     - [Backbone](#backbone)
     - [Neck](#neck)
+    - [Head](#head)
 - [YOLO_V4](#yolo_v4)
     - [Backbone](#backbone)
     - [Neck](#neck)
+    - [Head](#head)
 - [YOLO_V5](#yolo_v5)
     - [Backbone](#backbone)
     - [Neck](#neck)
+    - [Head](#head)
 - [YOLO_X](#yolo_x)
     - [Backbone](#backbone)
     - [Neck](#neck)
+    - [Head](#head)
 - [YOLO_V6](#yolo_v6)
     - [整体结构：](#%E6%95%B4%E4%BD%93%E7%BB%93%E6%9E%84)
     - [Backbone](#backbone)
     - [Neck](#neck)
+    - [Head](#head)
 - [YOLO_V7](#yolo_v7)
     - [Backbone](#backbone)
     - [Neck](#neck)
+    - [Head](#head)
 
 <!-- /TOC -->
 # YOLO_V1
 ## Backbone
 YOLOv1的backbone结构中使用了Leaky ReLu激活函数，但并没有引入BN层
 ![YOLO_V1_BACKBONE](images/deeplearning/networks/yolo_v1/yolo_v1_backbone.png)
+## Head
+没有明确的Head层，在网络末端输出一个$7\times7\times30$的
+张量，$7\times7$表示把输入图片划分成$7\times7$的网格(在训练时每个网格负责预测中心落在此网格中的物体)，每一个网格的通道维度等于$30=(2\times5+20)$，代表YOLOv1中每个网格能预测2个框，每个框能预测5个参数 (x,y,w,h,C)，分别是bounding box的中心坐标 x,y，bounding box的宽高 w,h 和置信度C。其中C代表网格中box能与物体的取得的最大IOU值，最后再加上20个种类。
+## Loss Function
+S²表示遍历所有的grid cell，B表示遍历所有的预测框；
+对于每一个GTbox只分配一个正样本(预测框)，也就是与它IOU最大的那个预测框，其余为负样本；
+正样本有定位损失、类别损失和置信度损失；负样本只有置信度损失。
+正样本的置信度标签值为预测框与标注框(ground truth)的IOU
+![YOLO_V1_LOSS](images/deeplearning/networks/yolo_v1/v1_loss.jpeg)
+
+
 cite: [paper](https://arxiv.org/pdf/1506.02640.pdf)
 
 # YOLO_V2
@@ -36,6 +56,8 @@ cite: [paper](https://arxiv.org/pdf/1506.02640.pdf)
 Darknet-19网络包含19个卷积层和5个max pooling层，整体计算量比YOLOv1中采用的GooleNet更少，最后用average pooling层代替全连接层进行Inference。
 在YOLOv2的Backbone中加入BN层之后，使得mAP提升了2%，而BN层也成为了YOLO后续系列的标配。\
 ![YOLO_V2_BACKBONE](images/deeplearning/networks/yolo_v2/yolo_v2_backbone.png)\
+## Head
+
 cite: [paper](https://arxiv.org/abs/1612.08242)
 
 # YOLO_V3
@@ -47,6 +69,8 @@ YOLOv3的Backbone在YOLOv2的基础上设计了Darknet-53结构,YOLOv3将YOLOv2�
 ## Neck
 采用FPN\
 ![YOLO_V3_FPN](images/deeplearning/networks/yolo_v3/v3_fpn.png)\
+## Head
+
 cite: [paper](https://arxiv.org/abs/1804.02767)
 
 # YOLO_V4
@@ -61,6 +85,8 @@ YOLOv4的Backbone在YOLOv3的基础上，受CSPNet网络结构启发，将多个
 ## Neck
 主要包含了SPP模块和PAN模块(从add操作改为concat操作)\
 ![YOLO_V4_Neck](images/deeplearning/networks/yolo_v4/v4_pan.png)\
+## Head
+
 cite: [paper](http://arxiv.org/abs/2004.10934)
 
 # YOLO_V5
@@ -72,6 +98,8 @@ YOLOv5最初版本中会存在Focus结构(结构见下图，作用是在没有�
 ## Neck
 YOLOv5的Neck侧也使用了SPP模块和PAN模块，但是在PAN模块进行融合后，将YOLOv4中使用的常规CBL模块替换成借鉴CSPnet设计的CSP_v5结构，加强网络特征融合的能力\
 ![YOLO_V5_Neck](images/deeplearning/networks/yolo_v5/v5_neck.png)\
+## Head
+
 cite: [github](https://github.com/ultralytics/yolov5)
 
 # YOLO_X
@@ -81,6 +109,8 @@ YOLOx的Backbone沿用了YOLOv3的Backbone结构
 ## Neck
 使用了YOLOv3的结构(FPN)，并且使用了SPP模块。\
 ![YOLO_X_NECK](images/deeplearning/networks/yolo_x/x_neck.png)
+## Head
+
 cite: [paper](http://arxiv.org/abs/2107.08430)
 
 # YOLO_V6
@@ -94,6 +124,8 @@ YOLOv6的Backbone侧在YOLOv5的基础上，设计了EfficientRep Backbone结构
 ## Neck
 YOLOv6的Neck侧受到硬件感知神经网络设计思想的启发，基于RepVGG style设计了可重参数化、更高效的Rep-PAN。Rep-PAN实际上是在PAN模块基础上，引入RepVGG style的RepBlock替换了YOLOv5中使用的CSP-Block
 ![YOLO_v6_Neck](images/deeplearning/networks/yolo_v6/v6_neck.png)
+## Head
+
 cite: [paper](http://arxiv.org/abs/2209.02976)
 
 # YOLO_V7
@@ -103,4 +135,6 @@ YOLOv7的Backbone在YOLOv5的基础上，设计了E-ELAN和MPConv结构，E-ELAN
 ## Neck
 YOLOv7的Neck侧主要包含了SPPSCP模块和优化的PAN模块，SPPCSP模块在SPP模块基础上在最后增加concat操作，与SPP模块之前的特征图进行融合，更加丰富了特征信息。PAN模块引入E-ELAN结构，使用expand、shuffle、merge cardinality等策略实现在不破坏原始梯度路径的情况下，提高网络的学习能力
 ![YOLO_V7_NECK](images/deeplearning/networks/yolo_v7/v7_neck.png)
+## Head
+
 cite: [paper](http://arxiv.org/abs/2207.02696)
