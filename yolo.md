@@ -1,37 +1,37 @@
 <!-- TOC -->
 
 - [YOLO_V1](#yolo_v1)
-    - [Backbone](#backbone)
-    - [Head](#head)
-    - [Loss Function](#loss-function)
+  - [Backbone](#backbone)
+  - [Head](#head)
+  - [Loss Function](#loss-function)
 - [YOLO_V2](#yolo_v2)
-    - [Backbone](#backbone)
-    - [Head](#head)
+  - [Backbone](#backbone-1)
+  - [Head](#head-1)
 - [YOLO_V3](#yolo_v3)
-    - [Backbone](#backbone)
-    - [Neck](#neck)
-    - [Head](#head)
+  - [Backbone](#backbone-2)
+  - [Neck](#neck)
+  - [Head](#head-2)
 - [YOLO_V4](#yolo_v4)
-    - [Backbone](#backbone)
-    - [Neck](#neck)
-    - [Head](#head)
+  - [Backbone](#backbone-3)
+  - [Neck](#neck-1)
+  - [Head](#head-3)
 - [YOLO_V5](#yolo_v5)
-    - [Backbone](#backbone)
-    - [Neck](#neck)
-    - [Head](#head)
+  - [Backbone](#backbone-4)
+  - [Neck](#neck-2)
+  - [Head](#head-4)
 - [YOLO_X](#yolo_x)
-    - [Backbone](#backbone)
-    - [Neck](#neck)
-    - [Head](#head)
+  - [Backbone](#backbone-5)
+  - [Neck](#neck-3)
+  - [Head](#head-5)
 - [YOLO_V6](#yolo_v6)
-    - [整体结构：](#%E6%95%B4%E4%BD%93%E7%BB%93%E6%9E%84)
-    - [Backbone](#backbone)
-    - [Neck](#neck)
-    - [Head](#head)
+  - [整体结构：](#整体结构)
+  - [Backbone](#backbone-6)
+  - [Neck](#neck-4)
+  - [Head](#head-6)
 - [YOLO_V7](#yolo_v7)
-    - [Backbone](#backbone)
-    - [Neck](#neck)
-    - [Head](#head)
+  - [Backbone](#backbone-7)
+  - [Neck](#neck-5)
+  - [Head](#head-7)
 
 <!-- /TOC -->
 # YOLO_V1
@@ -43,7 +43,7 @@ YOLOv1的backbone结构中使用了Leaky ReLu激活函数，但并没有引入BN
 张量，$7\times7$表示把输入图片划分成$7\times7$的网格(在训练时每个网格负责预测中心落在此网格中的物体)，每一个网格的通道维度等于$30=(2\times5+20)$，代表YOLOv1中每个网格能预测2个框，每个框能预测5个参数 (x,y,w,h,C)，分别是bounding box的中心坐标 x,y，bounding box的宽高 w,h 和置信度C。其中C代表网格中box能与物体的取得的最大IOU值，最后再加上20个种类。
 ## Loss Function
 S²表示遍历所有的grid cell，B表示遍历所有的预测框；
-对于每一个GTbox只分配一个正样本(预测框)，也就是与它IOU最大的那个预测框，其余为负样本；
+对每个有gt的网格位置(也就是gt的中心点所在的grid)，计算预测出来的两个预测框与gt框的iou，较大的那个预测框为正样本，另一个为负样本；
 正样本有定位损失、类别损失和置信度损失；负样本只有置信度损失。
 正样本的置信度标签值为预测框与标注框(ground truth)的IOU
 ![YOLO_V1_LOSS](images/deeplearning/networks/yolo_v1/v1_loss.jpeg)
