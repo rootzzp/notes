@@ -148,15 +148,19 @@ cite: [github](https://github.com/ultralytics/yolov5)
 YOLOx的Backbone沿用了YOLOv3的Backbone结构
 ![YOLO_X_BACKBONE](images/deeplearning/networks/yolo_x/yolo_x.png)
 ## Neck
-使用了YOLOv3的结构(FPN)，并且使用了SPP模块。\
+使用了PAN，并且使用了SPP模块。\
 ![YOLO_X_NECK](images/deeplearning/networks/yolo_x/x_neck.png)
 ## Head
 YOLOx的Head侧在YOLOv5的基础上在网络结构中引入了Decoupled Head，并使用anchor-free思想和SimOTA正负样本分配策略进行损失函数的计算与优化。\
-YOLOx使用了三个Decoupled Head（解耦头），分别聚焦cls（分类信息），reg（检测框信息）和IOU（置信度信息）。常规的检测头在特征的表达与学习能力上比起Decoupled Head有所欠缺，并且Decoupled Head模块能加快模型的收敛速度\
+YOLOx使用了三个Decoupled Head（解耦头），分别学习cls（分类信息），reg（检测框信息）和IOU（置信度信息）。常规的检测头在特征的表达与学习能力上比起Decoupled Head有所欠缺，并且Decoupled Head模块能加快模型的收敛速度\
 ![YOLO_X_Decoupled Head](images/deeplearning/networks/yolo_x/yolo_x_d.png)
 
 除此之外，YOLOx还使用anchor-free思想，比起YOLO系列中常规的anchor-based，在Head侧可以减少约$\frac{2}{3}$ 
-的参数。比起anchor-based方法使用先验知识设计anchor尺寸，anchor-free思想将感受野作为“anchor”信息。上述三个Decoupled Head中最上面的分支对应着大anchor框，中间的分支对应着中等anchor框最下面的分支对应着小anchor框。最后的输出将这个三个分支融合成一个 85×8400×8400 的特征向量。
+的参数。比起anchor-based方法使用先验知识设计anchor尺寸，anchor-free思想将感受野作为“anchor”信息。上述三个Decoupled Head中最上面的分支对应着大anchor框，中间的分支对应着中等anchor框最下面的分支对应着小anchor框。最后的输出将这个三个分支融合成一个 85×8400×8400的特征向量\
+
+实际上是将anchor大小的信息融入到了解码头输出的尺寸中,并且每个grid处有一个anchor;举例来说,如下图所示输出最大的特征图为128*80*80,经过Decoupled Head后,pred_box分支为80*80*4,而此层的下采样倍数为32,相当于在将输入图片以32个像素划分为80*80个grid,每个grid预测一个box(因为特征图是80*80*4)，而每个grid的实际的大小就可以看做当前grid的一个anchor。所以这里的anchor free其实就是anchor数量为1，大小等于grid的特殊情况
+
+![YOLO_X_Decoupled Head](images/deeplearning/networks/yolo_x/yolox_head.png)
 
 接下来就是介绍YOLOx的正负样本分配策略了，我们知道目标检测场景一张图像中往往负样本占绝大多数，而正样本只是少数。为了获得更多高质量的正样本，YOLOx中设计了样本初筛+SimOTA逻辑。
 
