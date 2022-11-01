@@ -82,9 +82,10 @@ YOLOv3在Neck侧的基础上顺势而为融合了3个尺度，在多个尺度的
 YOLOv3将YOLOv2的单标签分类改进为多标签分类，Head侧将用于单标签分类的Softmax分类器改成多个独立的用于多标签分类的Logistic分类器，取消了类别之间的互斥，可以使网络更加灵活，类别数增加到80。YOLOv2使用Softmax分类器，认为一个检测框只属于一个类别，每个检测框分配到概率最大的类别。但实际场景中一个检测框可能含有多个物体或者有重叠的类别标签。Logistic分类器主要用到Sigmoid函数，可以将输入约束在0到1的范围内，当一张图像经过特征提取后的某一检测框类别置信度经过sigmoid函数约束后如果大于设定的阈值，就表示该检测框负责的物体属于该类别。
 具体流程：对anchor进行划分，计算每个anchor与所有gt的iou形成iou矩阵(以gt为行，anchor为列)。\
 负样本：计算每一列iou的最大值(即每个anchor与所有gt的iou的最大值)，这个iou最大值大于0小于0.5的anchor设为负样本(对应的列)\
-正样本：1.计算每一列iou的最大值(即每个anchor与所有gt的iou的最大值)，这个iou最大值大于0.5的anchor，且anchor对应的grid为gt中心点所在的grid的anchor设为正样本；2.对每个gt，计算与其iou最大的anchor(计算iou矩阵每行的最大值)，且当anchor对应的grid为gt中心点所在的grid时该anchor也为正样本。设置为正样本的anchor，将其对应的gt的index+1记录下来，方便后面的计算\
+正样本：1.计算每一列iou的最大值(即每个anchor与所有gt的iou的最大值)，这个iou最大值大于0.5的anchor，且anchor对应的grid为gt中心点所在的grid的anchor设为正样本；2.对每个gt，计算与其iou最大的anchor(计算iou矩阵每行的最大值)，且当anchor对应的grid为gt中心点所在的grid时该anchor也为正样本。设置为正样本的anchor，将其对应的gt的index+1记录下来，方便后面的计算
 ## Loss Function
-YOLOv3中置信度误差损失和分类误差损失都使用交叉熵来表示
+YOLOv3中置信度误差损失和分类误差损失都使用交叉熵来表示\
+![YOLO_V3_LOSS](images/deeplearning/networks/yolo_v3/v3_loss.png.png)
 cite: [paper](https://arxiv.org/abs/1804.02767)
 
 # YOLO_V4
@@ -98,7 +99,7 @@ YOLOv4的Backbone在YOLOv3的基础上，受CSPNet网络结构启发，将多个
 ![YOLO_V4_BACKBONE](images/deeplearning/networks/yolo_v4/yolo_v4.png)
 ## Neck
 主要包含了SPP模块和PAN模块(从add操作改为concat操作)\
-![YOLO_V4_Neck](images/deeplearning/networks/yolo_v4/v4_pan.png)\
+![YOLO_V4_Neck](images/deeplearning/networks/yolo_v4/v4_pan.png)
 ## Head
 YOLOv4的Head侧沿用了YOLOv3的整体架构，并引入了CIOU Loss和DIOU NMS来提升Head侧的整体性能
 ## Loss Function
@@ -155,7 +156,7 @@ YOLOx使用了三个Decoupled Head（解耦头），分别聚焦cls（分类信�
 ![YOLO_X_Decoupled Head](images/deeplearning/networks/yolo_x/yolo_x_d.png)
 
 除此之外，YOLOx还使用anchor-free思想，比起YOLO系列中常规的anchor-based，在Head侧可以减少约$\frac{2}{3}$ 
-的参数。比起anchor-based方法使用先验知识设计anchor尺寸，anchor-free思想将感受野作为“anchor”信息。上述三个Decoupled Head中最上面的分支对应着大anchor框，中间的分支对应着中等anchor框最下面的分支对应着小anchor框。最后的输出将这个三个分支融合成一个 85 \times 840085×8400 的特征向量。
+的参数。比起anchor-based方法使用先验知识设计anchor尺寸，anchor-free思想将感受野作为“anchor”信息。上述三个Decoupled Head中最上面的分支对应着大anchor框，中间的分支对应着中等anchor框最下面的分支对应着小anchor框。最后的输出将这个三个分支融合成一个 85×8400×8400 的特征向量。
 
 接下来就是介绍YOLOx的正负样本分配策略了，我们知道目标检测场景一张图像中往往负样本占绝大多数，而正样本只是少数。为了获得更多高质量的正样本，YOLOx中设计了样本初筛+SimOTA逻辑。
 
