@@ -38,9 +38,6 @@ $$L=w_c \cdot w_s \cdot L_{sem} + L_{inst} + L_{po} + L_{vf} + \lambda_v \cdot L
 cite: [paper](http://arxiv.org/abs/2108.03227)
 
 
-# Projecting Your View Attentively
-
-
 # BEVFormer
 
 # Lift-splat
