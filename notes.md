@@ -283,6 +283,51 @@ P&=(I-KH)\overline{P}
 $$
 
 # Transformer
+整体结构如下所示，分为编码器，解码器两个部分。其中每个编码器由multi-head attention和FFN(feed forward net)组成，每个解码器由masked multi-head attention、跨域multi-head attention和FFN组成
+![transformer](images/deeplearning/networks/transformer/transformer_net.png)
+## self-attention
+其结构如下所示：
+
+![self-attention](images/deeplearning/networks/transformer/scaled_doc_product.png)
+
+计算公式是：
+$$Attention(Q,K,V)=softmax(\frac{QK^T}{\sqrt{d_k}})V$$
+以编码器举例，Q,K,V均来自输入的embedding分别乘上可学习的矩阵$W^Q$、$W^K$、$W^V$。假设输入的embedding为矩阵$X_{m,n}$，m代表序列长度，n代表序列中每个元素的维度，则$Q=X \cdot W^Q$、$K=X \cdot W^K$、$V=X \cdot W^V$\
+其中，$W^Q等可学习矩阵的维度为n,p，则Q,K,V的维度为m,q$，$d_k$为K的维度，在这里应该是q(注意m是序列长度)
+
+## multi head attention
+通过h个不同的线性变换对 Query、Key 和 Value 进行映射；然后，将不同的 Attention 拼接起来；最后，再进行一次线性变换
+，其结构如下所示：\
+![multi head attention](images/deeplearning/networks/transformer/multi_head.png)
+
+每一组注意力用于将输入映射到不同的子表示空间，这使得模型可以在不同子表示空间中关注不同的位置。整个计算过程可表示为：
+$$MultiHead(Q,K,V)=Concat(head_1,head_2,...,head_h) \cdot W^o$$
+其中$head_i=Attention(Q_i,K_i,V_i)$，在多头注意力下，需要为每组注意力单独维护不同的$W^Q_i$、$W^K_i$和$W^V_i$权重矩阵，从而得到不同的$Q_i$、$K_i$和$V_i$矩阵
+
+## FFN
+就是一个全连接前馈网络
+## 残差连接和层归一化
+编码器结构中有一个需要注意的细节：每个编码器的每个子层（Self-Attention 层和 FFN 层）都有一个残差连接，再执行一个层标准化操作，整个计算过程可以表示为:
+$$LayerNorm(x+FFN(x))$$
+## 位置编码
+为了表示序列中元素相对顺序。Transformer 模型为每个输入的元素嵌入向量添加一个向量。这些向量遵循模型学习的特定模式，有助于模型确定每个元素的位置，或序列中不同元素之间的距离，原论文中这样表示：
+$$PE(pos,2i)=sin(\frac{pos}{10000^{2i/n}})$$
+$$PE(pos,2i+1)=cos(\frac{pos}{10000^{2i/n}})$$
+其中n表示每个元素的维度，pos表示元素索引，i表示元素维度中的索引。m个词，每个词的embedding维度是n，则pos=0代表第一个词，pos=1代表第二个词，2i=2代表embedding后的向量中的索引2
+
+## Mask
+### Padding Mask
+因为每个批次输入序列的长度是不一样的，所以我们要对输入序列进行对齐。具体来说，就是在较短的序列后面填充 0（但是如果输入的序列太长，则是截断，把多余的直接舍弃）。因为这些填充的位置，其实是没有什么意义的，所以我们的 Attention 机制不应该把注意力放在这些位置上，所以我们需要进行一些处理。
+
+具体的做法：把这些位置的值加上一个非常大的负数（负无穷），这样的话，经过 Softmax 后，这些位置的概率就会接近 0。
+### Sequence Mask
+Sequence Mask 是为了使得 Decoder 不能看见未来的信息。也就是对于一个序列，在 t tt 时刻，我们的解码输出应该只能依赖于 t tt 时刻之前的输出，而不能依赖 t tt 之后的输出。因为我们需要想一个办法，把 t tt 之后的信息给隐藏起来。
+
+具体的做法：产生一个上三角矩阵，上三角的值全为 0。把这个矩阵作用在每个序列上，就可以达到我们的目的
+
+## 跨域multi-head attention
+对于解码器的第二个attention，K和V来自编码器，Q来自解码器
+
 
 
 
