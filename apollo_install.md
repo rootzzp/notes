@@ -28,7 +28,7 @@ git clone https://github.com/ApolloAuto/apollo.git
 
 启动docker容器
 cd ~/apollo
-bash docker/scripts/dev_start.sh
+bash docker/scripts/dev_start.sh -g cn
 当提示无法pull镜像时，添加网易的镜像源：
 vim /etc/docker/daemon.json 
 {
