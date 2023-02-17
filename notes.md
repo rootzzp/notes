@@ -283,6 +283,23 @@ P&=(I-KH)\overline{P}
 \end{aligned}
 $$
 
+# EKF
+在kalman中，系统状态和观测方程如下:
+$$\begin{aligned}
+\overline{x}&=Fx+Bu\\
+\ z&=Hx
+\end{aligned}
+$$
+但在非线性系统中，$Fx+Bu$被替代为$f(x,u)$,Hx被替换为$h(x)$,那么在ekf中矩阵F和H为这两个非线性函数的雅克比矩阵(一阶微分)，要注意的是，状态预测和观测都是使用原始非线性函数\
+![ekf](images/auto_drive/ekf.png)
+
+# UKF
+处理过程:（生成一批加权sigma点，每次将sigma点传递给预测函数和测量函数，利用权值计算转换后的点的均值和方差来替代kalman中各种方差矩阵）\
+![ukf](images/auto_drive/ufk_process.png)
+对比\
+![ukf](images/auto_drive/ukf.png)
+补充sigma点生成过程：
+![sigma point generate](images/auto_drive/sigma%E7%82%B9%E7%94%9F%E6%88%90.png)
 # SORT 目标跟踪
 每个跟踪的目标有一个tracker对象，存放相应的卡尔曼滤波模型
 
