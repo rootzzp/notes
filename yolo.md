@@ -12,9 +12,12 @@
   - [Neck](#neck)
   - [Head](#head-2)
   - [Loss Function](#loss-function-1)
+  - [MMdetection 对应解释](#mmdetection-对应解释)
+    - [Backbone darknet53](#backbone-darknet53)
+    - [Neck](#neck-1)
 - [YOLO\_V4](#yolo_v4)
   - [Backbone](#backbone-3)
-  - [Neck](#neck-1)
+  - [Neck](#neck-2)
   - [Head](#head-3)
   - [Loss Function](#loss-function-2)
     - [IOU Loss](#iou-loss)
@@ -23,22 +26,25 @@
     - [CIOU Loss](#ciou-loss)
 - [YOLO\_V5](#yolo_v5)
   - [Backbone](#backbone-4)
-  - [Neck](#neck-2)
+  - [Neck](#neck-3)
   - [Head](#head-4)
 - [YOLO\_X](#yolo_x)
   - [Backbone](#backbone-5)
-  - [Neck](#neck-3)
+  - [Neck](#neck-4)
   - [Head](#head-5)
 - [YOLO\_V6](#yolo_v6)
   - [整体结构：](#整体结构)
   - [Backbone](#backbone-6)
-  - [Neck](#neck-4)
+  - [Neck](#neck-5)
   - [Head](#head-6)
 - [YOLO\_V7](#yolo_v7)
   - [Backbone](#backbone-7)
-  - [Neck](#neck-5)
+  - [Neck](#neck-6)
   - [Head](#head-7)
 
+<!-- /TOC -->
+
+<!-- /TOC -->
 <!-- /TOC -->
 # YOLO_V1
 ## Backbone
@@ -87,6 +93,222 @@ YOLOv3将YOLOv2的单标签分类改进为多标签分类，Head侧将用于单�
 YOLOv3中置信度误差损失和分类误差损失都使用交叉熵来表示\
 ![YOLO_V3_LOSS](images/deeplearning/networks/yolo_v3/v3_loss.png.png)
 cite: [paper](https://arxiv.org/abs/1804.02767)
+
+## MMdetection 对应解释
+### Backbone darknet53
+```python
+class Darknet(BaseModule):
+    # Dict(depth: (layers, channels))
+    arch_settings = {
+        53: ((1, 2, 8, 8, 4), ((32, 64), (64, 128), (128, 256), (256, 512),
+                               (512, 1024)))
+    }
+    def __init__(self,
+                 depth=53,
+                 out_indices=(3, 4, 5),
+                 frozen_stages=-1,
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN', requires_grad=True),
+                 act_cfg=dict(type='LeakyReLU', negative_slope=0.1),
+                 norm_eval=True,
+                 pretrained=None,
+                 init_cfg=None):
+        super(Darknet, self).__init__(init_cfg)
+        if depth not in self.arch_settings:
+            raise KeyError(f'invalid depth {depth} for darknet')
+
+        self.depth = depth
+        self.out_indices = out_indices
+        self.frozen_stages = frozen_stages
+        self.layers, self.channels = self.arch_settings[depth]
+
+        cfg = dict(conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg)
+
+        self.conv1 = ConvModule(3, 32, 3, padding=1, **cfg)
+
+        self.cr_blocks = ['conv1']
+        for i, n_layers in enumerate(self.layers):
+            layer_name = f'conv_res_block{i + 1}'
+            in_c, out_c = self.channels[i]
+            self.add_module(
+                layer_name,
+                self.make_conv_res_block(in_c, out_c, n_layers, **cfg))
+            self.cr_blocks.append(layer_name)
+
+        self.norm_eval = norm_eval
+
+        assert not (init_cfg and pretrained), \
+            'init_cfg and pretrained cannot be specified at the same time'
+        if isinstance(pretrained, str):
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            self.init_cfg = dict(type='Pretrained', checkpoint=pretrained)
+        elif pretrained is None:
+            if init_cfg is None:
+                self.init_cfg = [
+                    dict(type='Kaiming', layer='Conv2d'),
+                    dict(
+                        type='Constant',
+                        val=1,
+                        layer=['_BatchNorm', 'GroupNorm'])
+                ]
+        else:
+            raise TypeError('pretrained must be a str or None')
+
+    def forward(self, x):
+        outs = []
+        for i, layer_name in enumerate(self.cr_blocks):
+            cr_block = getattr(self, layer_name)
+            x = cr_block(x)
+            if i in self.out_indices:
+                outs.append(x)
+
+        return tuple(outs)
+```
+先经过一个self.conv1 = ConvModule(3, 32, 3, padding=1, **cfg)提取图像特征；再顺序接5个conv_res_block，每个block的n_layer对应(1, 2, 8, 8, 4)，输入输出通道数对应((32, 64), (64, 128), (128, 256), (256, 512),(512, 1024))
+
+其中conv_res_block由一个常规conv和多个residual模块组成
+```python
+def make_conv_res_block(in_channels,
+                            out_channels,
+                            res_repeat,
+                            conv_cfg=None,
+                            norm_cfg=dict(type='BN', requires_grad=True),
+                            act_cfg=dict(type='LeakyReLU',
+                            negative_slope=0.1)):
+
+        cfg = dict(conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg)
+
+        model = nn.Sequential()
+        model.add_module(
+            'conv',
+            ConvModule(
+                in_channels, out_channels, 3, stride=2, padding=1, **cfg))
+        for idx in range(res_repeat):
+            model.add_module('res{}'.format(idx),
+                             ResBlock(out_channels, **cfg))
+        return model
+
+class ResBlock(BaseModule):
+    def __init__(self,
+                 in_channels,
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN', requires_grad=True),
+                 act_cfg=dict(type='LeakyReLU', negative_slope=0.1),
+                 init_cfg=None):
+        super(ResBlock, self).__init__(init_cfg)
+        assert in_channels % 2 == 0  # ensure the in_channels is even
+        half_in_channels = in_channels // 2
+
+        # shortcut
+        cfg = dict(conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg)
+
+        self.conv1 = ConvModule(in_channels, half_in_channels, 1, **cfg)
+        self.conv2 = ConvModule(
+            half_in_channels, in_channels, 3, padding=1, **cfg)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.conv2(out)
+        out = out + residual
+
+        return out
+```
+out_indices=(3, 4, 5)指第3，4，5个block的输出会输入到neck中，那么对应的通道数就是（256，512，1024）了,对应大小分别是n/8,n/16,n/32
+
+### Neck
+```python
+config:
+neck=dict(
+        type='YOLOV3Neck',
+        num_scales=3,
+        in_channels=[1024, 512, 256],
+        out_channels=[512, 256, 128]),
+code:
+class YOLOV3Neck(BaseModule):
+    def __init__(self,
+                 num_scales: int,
+                 in_channels: List[int],
+                 out_channels: List[int],
+                 conv_cfg: OptConfigType = None,
+                 norm_cfg: ConfigType = dict(type='BN', requires_grad=True),
+                 act_cfg: ConfigType = dict(
+                     type='LeakyReLU', negative_slope=0.1),
+                 init_cfg: OptMultiConfig = None) -> None:
+        super(YOLOV3Neck, self).__init__(init_cfg)
+        assert (num_scales == len(in_channels) == len(out_channels))
+        self.num_scales = num_scales
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+        # shortcut
+        cfg = dict(conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg)
+
+        # To support arbitrary scales, the code looks awful, but it works.
+        # Better solution is welcomed.
+        self.detect1 = DetectionBlock(in_channels[0], out_channels[0], **cfg)
+        for i in range(1, self.num_scales):
+            in_c, out_c = self.in_channels[i], self.out_channels[i]
+            inter_c = out_channels[i - 1]
+            self.add_module(f'conv{i}', ConvModule(inter_c, out_c, 1, **cfg))
+            # in_c + out_c : High-lvl feats will be cat with low-lvl feats
+            self.add_module(f'detect{i+1}',
+                            DetectionBlock(in_c + out_c, out_c, **cfg))
+
+    def forward(self, feats=Tuple[Tensor]) -> Tuple[Tensor]:
+        assert len(feats) == self.num_scales
+
+        # processed from bottom (high-lvl) to top (low-lvl)
+        outs = []
+        out = self.detect1(feats[-1])
+        outs.append(out)
+
+        for i, x in enumerate(reversed(feats[:-1])):
+            conv = getattr(self, f'conv{i+1}')
+            tmp = conv(out)
+
+            # Cat with low-lvl feats
+            tmp = F.interpolate(tmp, scale_factor=2)
+            tmp = torch.cat((tmp, x), 1)
+
+            detect = getattr(self, f'detect{i+2}')
+            out = detect(tmp)
+            outs.append(out)
+
+        return tuple(outs)
+
+class DetectionBlock(BaseModule):
+    def __init__(self,
+                 in_channels: int,
+                 out_channels: int,
+                 conv_cfg: OptConfigType = None,
+                 norm_cfg: ConfigType = dict(type='BN', requires_grad=True),
+                 act_cfg: ConfigType = dict(
+                     type='LeakyReLU', negative_slope=0.1),
+                 init_cfg: OptMultiConfig = None) -> None:
+        super(DetectionBlock, self).__init__(init_cfg)
+        double_out_channels = out_channels * 2
+
+        # shortcut
+        cfg = dict(conv_cfg=conv_cfg, norm_cfg=norm_cfg, act_cfg=act_cfg)
+        self.conv1 = ConvModule(in_channels, out_channels, 1, **cfg)
+        self.conv2 = ConvModule(
+            out_channels, double_out_channels, 3, padding=1, **cfg)
+        self.conv3 = ConvModule(double_out_channels, out_channels, 1, **cfg)
+        self.conv4 = ConvModule(
+            out_channels, double_out_channels, 3, padding=1, **cfg)
+        self.conv5 = ConvModule(double_out_channels, out_channels, 1, **cfg)
+
+    def forward(self, x: Tensor) -> Tensor:
+        tmp = self.conv1(x)
+        tmp = self.conv2(tmp)
+        tmp = self.conv3(tmp)
+        tmp = self.conv4(tmp)
+        out = self.conv5(tmp)
+        return out
+```
+示意图：![neck](images/deeplearning/networks/yolo_v3/neck.drawio.svg)
 
 # YOLO_V4
 目标检测整体结构图：\
