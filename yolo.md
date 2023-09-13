@@ -15,10 +15,11 @@
   - [MMdetection 对应解释](#mmdetection-对应解释)
     - [Backbone darknet53](#backbone-darknet53)
     - [Neck](#neck-1)
+    - [Head](#head-3)
 - [YOLO\_V4](#yolo_v4)
   - [Backbone](#backbone-3)
   - [Neck](#neck-2)
-  - [Head](#head-3)
+  - [Head](#head-4)
   - [Loss Function](#loss-function-2)
     - [IOU Loss](#iou-loss)
     - [GIOU Loss](#giou-loss)
@@ -27,20 +28,20 @@
 - [YOLO\_V5](#yolo_v5)
   - [Backbone](#backbone-4)
   - [Neck](#neck-3)
-  - [Head](#head-4)
+  - [Head](#head-5)
 - [YOLO\_X](#yolo_x)
   - [Backbone](#backbone-5)
   - [Neck](#neck-4)
-  - [Head](#head-5)
+  - [Head](#head-6)
 - [YOLO\_V6](#yolo_v6)
   - [整体结构：](#整体结构)
   - [Backbone](#backbone-6)
   - [Neck](#neck-5)
-  - [Head](#head-6)
+  - [Head](#head-7)
 - [YOLO\_V7](#yolo_v7)
   - [Backbone](#backbone-7)
   - [Neck](#neck-6)
-  - [Head](#head-7)
+  - [Head](#head-8)
 
 <!-- /TOC -->
 
@@ -309,6 +310,480 @@ class DetectionBlock(BaseModule):
         return out
 ```
 示意图：![neck](images/deeplearning/networks/yolo_v3/neck.drawio.svg)
+### Head
+接Neck的三层输出，分别得到三个pred_map
+```python
+class YOLOV3Head(BaseDenseHead):
+    def __init__(self,
+                 num_classes: int,
+                 in_channels: Sequence[int],
+                 out_channels: Sequence[int] = (1024, 512, 256),
+                 anchor_generator: ConfigType = dict(
+                     type='YOLOAnchorGenerator',
+                     base_sizes=[[(116, 90), (156, 198), (373, 326)],
+                                 [(30, 61), (62, 45), (59, 119)],
+                                 [(10, 13), (16, 30), (33, 23)]],
+                     strides=[32, 16, 8]),
+                 bbox_coder: ConfigType = dict(type='YOLOBBoxCoder'),
+                 featmap_strides: Sequence[int] = (32, 16, 8),
+                 one_hot_smoother: float = 0.,
+                 conv_cfg: OptConfigType = None,
+                 norm_cfg: ConfigType = dict(type='BN', requires_grad=True),
+                 act_cfg: ConfigType = dict(
+                     type='LeakyReLU', negative_slope=0.1),
+                 loss_cls: ConfigType = dict(
+                     type='CrossEntropyLoss',
+                     use_sigmoid=True,
+                     loss_weight=1.0),
+                 loss_conf: ConfigType = dict(
+                     type='CrossEntropyLoss',
+                     use_sigmoid=True,
+                     loss_weight=1.0),
+                 loss_xy: ConfigType = dict(
+                     type='CrossEntropyLoss',
+                     use_sigmoid=True,
+                     loss_weight=1.0),
+                 loss_wh: ConfigType = dict(type='MSELoss', loss_weight=1.0),
+                 train_cfg: OptConfigType = None,
+                 test_cfg: OptConfigType = None) -> None:
+        super().__init__(init_cfg=None)
+        # Check params
+        assert (len(in_channels) == len(out_channels) == len(featmap_strides))
+
+        self.num_classes = num_classes
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.featmap_strides = featmap_strides
+        self.train_cfg = train_cfg
+        self.test_cfg = test_cfg
+        if self.train_cfg:
+            self.assigner = TASK_UTILS.build(self.train_cfg['assigner'])
+            if train_cfg.get('sampler', None) is not None:
+                self.sampler = TASK_UTILS.build(
+                    self.train_cfg['sampler'], context=self)
+            else:
+                self.sampler = PseudoSampler()
+
+        self.one_hot_smoother = one_hot_smoother
+
+        self.conv_cfg = conv_cfg
+        self.norm_cfg = norm_cfg
+        self.act_cfg = act_cfg
+
+        self.bbox_coder = TASK_UTILS.build(bbox_coder)
+
+        self.prior_generator = TASK_UTILS.build(anchor_generator)
+
+        self.loss_cls = MODELS.build(loss_cls)
+        self.loss_conf = MODELS.build(loss_conf)
+        self.loss_xy = MODELS.build(loss_xy)
+        self.loss_wh = MODELS.build(loss_wh)
+
+        self.num_base_priors = self.prior_generator.num_base_priors[0]
+        assert len(
+            self.prior_generator.num_base_priors) == len(featmap_strides)
+        self._init_layers()
+
+    @property
+    def num_levels(self) -> int:
+        """int: number of feature map levels"""
+        return len(self.featmap_strides)
+
+    @property
+    def num_attrib(self) -> int:
+        """int: number of attributes in pred_map, bboxes (4) +
+        objectness (1) + num_classes"""
+
+        return 5 + self.num_classes #coco数据类别是80，所以总共预测的属性是4+1+80=85
+
+    def _init_layers(self) -> None:
+        """initialize conv layers in YOLOv3 head."""
+        self.convs_bridge = nn.ModuleList()
+        self.convs_pred = nn.ModuleList()
+        for i in range(self.num_levels):
+            conv_bridge = ConvModule(
+                self.in_channels[i],
+                self.out_channels[i],
+                3,
+                padding=1,
+                conv_cfg=self.conv_cfg,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg)
+            conv_pred = nn.Conv2d(self.out_channels[i],
+                                  self.num_base_priors * self.num_attrib, 1)# num_base_priors=3，因此输出通道数是3*85=255
+
+            self.convs_bridge.append(conv_bridge)
+            self.convs_pred.append(conv_pred)
+
+    def forward(self, x: Tuple[Tensor, ...]) -> tuple:
+        assert len(x) == self.num_levels
+        pred_maps = []
+        for i in range(self.num_levels):#每一层单独得到一个pred_map
+            feat = x[i]
+            feat = self.convs_bridge[i](feat)
+            pred_map = self.convs_pred[i](feat)
+            pred_maps.append(pred_map)
+
+        return tuple(pred_maps),
+```
+调用loss_by_feate计算loss
+```python
+def loss_by_feat(
+            self,
+            pred_maps: Sequence[Tensor],
+            batch_gt_instances: InstanceList,
+            batch_img_metas: List[dict],
+            batch_gt_instances_ignore: OptInstanceList = None) -> dict:
+        num_imgs = len(batch_img_metas)
+        device = pred_maps[0][0].device
+
+        featmap_sizes = [
+            pred_maps[i].shape[-2:] for i in range(self.num_levels)
+        ] ## 每一层feature_map的尺寸
+        mlvl_anchors = self.prior_generator.grid_priors( #得到三层anchor(原图像尺寸坐标)
+            featmap_sizes, device=device)
+        anchor_list = [mlvl_anchors for _ in range(num_imgs)] #把anchor复制batch份
+
+        responsible_flag_list = []
+        for img_id in range(num_imgs):
+            responsible_flag_list.append(
+                self.responsible_flags(featmap_sizes,
+                                       batch_gt_instances[img_id].bboxes,
+                                       device))# 对每张图，找到gt的中心点对应到每一层pred_map的grid的index，同时把这个index扩展到每个grid的3个anchor,详细函数在下面
+
+        target_maps_list, neg_maps_list = self.get_targets(
+            anchor_list, responsible_flag_list, batch_gt_instances)
+
+        losses_cls, losses_conf, losses_xy, losses_wh = multi_apply(
+            self.loss_by_feat_single, pred_maps, target_maps_list,
+            neg_maps_list)
+
+        return dict(
+            loss_cls=losses_cls,
+            loss_conf=losses_conf,
+            loss_xy=losses_xy,
+            loss_wh=losses_wh)
+
+def responsible_flags(self, featmap_sizes: List[tuple], gt_bboxes: Tensor,
+                          device: str) -> List[Tensor]:
+        assert self.num_levels == len(featmap_sizes)
+        multi_level_responsible_flags = []
+        for i in range(self.num_levels):
+            anchor_stride = self.prior_generator.strides[i] #对第一层，就是32，32
+            feat_h, feat_w = featmap_sizes[i]
+            gt_cx = ((gt_bboxes[:, 0] + gt_bboxes[:, 2]) * 0.5).to(device) # gt的标注是x1,y1,x2,y2
+            gt_cy = ((gt_bboxes[:, 1] + gt_bboxes[:, 3]) * 0.5).to(device)
+            gt_grid_x = torch.floor(gt_cx / anchor_stride[0]).long()# gt的中心点对应的grid index
+            gt_grid_y = torch.floor(gt_cy / anchor_stride[1]).long()
+            # row major indexing
+            gt_bboxes_grid_idx = gt_grid_y * feat_w + gt_grid_x
+
+            responsible_grid = torch.zeros(
+                feat_h * feat_w, dtype=torch.uint8, device=device)
+            responsible_grid[gt_bboxes_grid_idx] = 1 #size: feat_h * feat_w
+
+            responsible_grid = responsible_grid[:, None].expand(
+                responsible_grid.size(0),
+                self.prior_generator.num_base_priors[i]).contiguous().view(-1)#size: num_anchor * feat_h * feat_w
+
+            multi_level_responsible_flags.append(responsible_grid)
+        return multi_level_responsible_flags
+
+def get_targets(self, anchor_list: List[List[Tensor]],
+                    responsible_flag_list: List[List[Tensor]],
+                    batch_gt_instances: List[InstanceData]) -> tuple:
+        num_imgs = len(anchor_list)
+
+        # anchor number of multi levels
+        num_level_anchors = [anchors.size(0) for anchors in anchor_list[0]] #每层的anchor数量（长度为3的列表）
+
+        results = multi_apply(self._get_targets_single, anchor_list,
+                              responsible_flag_list, batch_gt_instances)# 逐个batch处理
+
+        all_target_maps, all_neg_maps = results # all_target_maps是列表，其中每个元素代表一张图的target_map(n_anchor * 85)
+        assert num_imgs == len(all_target_maps) == len(all_neg_maps)
+        target_maps_list = images_to_levels(all_target_maps, num_level_anchors) # 得到每一层上多个batch的target_map,长度为3的列表，每个元素（n_batch,这一层上的anchor数量，85）
+        neg_maps_list = images_to_levels(all_neg_maps, num_level_anchors)
+
+        return target_maps_list, neg_maps_list
+
+def _get_targets_single(self, anchors: List[Tensor],
+                            responsible_flags: List[Tensor],
+                            gt_instances: InstanceData) -> tuple:
+        #处理单个batch,anchor:三层的anchor构成的列表
+        gt_bboxes = gt_instances.bboxes
+        gt_labels = gt_instances.labels
+        anchor_strides = []
+        for i in range(len(anchors)):
+            anchor_strides.append(
+                torch.tensor(self.featmap_strides[i],
+                             device=gt_bboxes.device).repeat(len(anchors[i])))
+        concat_anchors = torch.cat(anchors) #三层concat到一起
+        concat_responsible_flags = torch.cat(responsible_flags)
+
+        anchor_strides = torch.cat(anchor_strides)
+        assert len(anchor_strides) == len(concat_anchors) == \
+               len(concat_responsible_flags)
+        pred_instances = InstanceData(
+            priors=concat_anchors, responsible_flags=concat_responsible_flags)
+
+        assign_result = self.assigner.assign(pred_instances, gt_instances) # GridAssigner，详细见下面
+        sampling_result = self.sampler.sample(assign_result, pred_instances, # PseudoSampler，详细见下面
+                                              gt_instances)
+
+        target_map = concat_anchors.new_zeros(
+            concat_anchors.size(0), self.num_attrib) # size:n_anchor*(4+1+80),存储每个anchor的target
+
+        target_map[sampling_result.pos_inds, :4] = self.bbox_coder.encode(
+            sampling_result.pos_priors, sampling_result.pos_gt_bboxes,
+            anchor_strides[sampling_result.pos_inds]) # 计算正例anchor的前4维，也就是box的target值,详细encode过程见下面
+
+        target_map[sampling_result.pos_inds, 4] = 1 # objectness = 1
+
+        gt_labels_one_hot = F.one_hot(
+            gt_labels, num_classes=self.num_classes).float()
+        target_map[sampling_result.pos_inds, 5:] = gt_labels_one_hot[
+            sampling_result.pos_assigned_gt_inds] # 正例anchor的类别的one_hot编码
+
+        neg_map = concat_anchors.new_zeros(
+            concat_anchors.size(0), dtype=torch.uint8)
+        neg_map[sampling_result.neg_inds] = 1 # size:n_anchor，与target_map不类似，只代表哪些anchor是负例
+
+        return target_map, neg_map
+
+class GridAssigner(BaseAssigner):
+    def __init__(
+        self,
+        pos_iou_thr: float,
+        neg_iou_thr: Union[float, Tuple[float, float]],
+        min_pos_iou: float = .0,
+        gt_max_assign_all: bool = True,
+        iou_calculator: ConfigType = dict(type='BboxOverlaps2D')
+    ) -> None:
+        self.pos_iou_thr = pos_iou_thr
+        self.neg_iou_thr = neg_iou_thr
+        self.min_pos_iou = min_pos_iou
+        self.gt_max_assign_all = gt_max_assign_all
+        self.iou_calculator = TASK_UTILS.build(iou_calculator)
+
+    def assign(self,
+               pred_instances: InstanceData,
+               gt_instances: InstanceData,
+               gt_instances_ignore: Optional[InstanceData] = None,
+               **kwargs) -> AssignResult:
+        gt_bboxes = gt_instances.bboxes
+        gt_labels = gt_instances.labels
+
+        priors = pred_instances.priors
+        responsible_flags = pred_instances.responsible_flags # size:n_anchor；gt的中心点所在grid对应的anchor的值为1，其余为0
+
+        num_gts, num_priors = gt_bboxes.size(0), priors.size(0)
+
+        # compute iou between all gt and priors
+        overlaps = self.iou_calculator(gt_bboxes, priors) # size : n_gt * n_anchor
+
+        # 1. assign -1 by default
+        assigned_gt_inds = overlaps.new_full((num_priors, ),
+                                             -1,
+                                             dtype=torch.long) # size：n_anchor，存储每个anchor对应的gt的index+1，默认值是-1
+
+        if num_gts == 0 or num_priors == 0:
+            # No ground truth or priors, return empty assignment
+            max_overlaps = overlaps.new_zeros((num_priors, ))
+            if num_gts == 0:
+                # No truth, assign everything to background
+                assigned_gt_inds[:] = 0
+            assigned_labels = overlaps.new_full((num_priors, ),
+                                                -1,
+                                                dtype=torch.long)
+            return AssignResult(
+                num_gts,
+                assigned_gt_inds,
+                max_overlaps,
+                labels=assigned_labels)
+
+        # 2. assign negative: below
+        # for each anchor, which gt best overlaps with it
+        # for each anchor, the max iou of all gts
+        # shape of max_overlaps == argmax_overlaps == num_priors
+        max_overlaps, argmax_overlaps = overlaps.max(dim=0) # dim=0指行之间比较，即返回每列的最大值（每个anchor与gt的最大iou,及对应的gt的index）
+
+        if isinstance(self.neg_iou_thr, float):
+            assigned_gt_inds[(max_overlaps >= 0)
+                             & (max_overlaps <= self.neg_iou_thr)] = 0 # 最大iou大于0，但是小于neg_iou_thr时，anchor无对应的gt（反例），设置值为0
+        elif isinstance(self.neg_iou_thr, (tuple, list)):
+            assert len(self.neg_iou_thr) == 2
+            assigned_gt_inds[(max_overlaps > self.neg_iou_thr[0])
+                             & (max_overlaps <= self.neg_iou_thr[1])] = 0
+
+        # 3. assign positive: falls into responsible cell and above
+        # positive IOU threshold, the order matters.
+        # the prior condition of comparison is to filter out all
+        # unrelated anchors, i.e. not responsible_flags
+        overlaps[:, ~responsible_flags.type(torch.bool)] = -1. # 修改iou矩阵，不属于gt中心点对应的anchor与所有的gt的iou值都设置为-1
+
+        # calculate max_overlaps again, but this time we only consider IOUs
+        # for anchors responsible for prediction
+        max_overlaps, argmax_overlaps = overlaps.max(dim=0) # 只考虑gt中心点对应的anchor与所有gt的iou
+
+        # for each gt, which anchor best overlaps with it
+        # for each gt, the max iou of all proposals
+        # shape of gt_max_overlaps == gt_argmax_overlaps == num_gts
+        gt_max_overlaps, gt_argmax_overlaps = overlaps.max(dim=1) #size:n_gt, 每个gt与所有anchor的最大iou值
+
+        pos_inds = (max_overlaps > self.pos_iou_thr) & responsible_flags.type(
+            torch.bool) #最大iou大于pos_iou_thr的anchor为正例
+        assigned_gt_inds[pos_inds] = argmax_overlaps[pos_inds] + 1 # 设置对应的gt的index+1值
+
+        # 4. assign positive to max overlapped anchors within responsible cell
+        for i in range(num_gts):
+            if gt_max_overlaps[i] > self.min_pos_iou:
+                if self.gt_max_assign_all:
+                    max_iou_inds = (overlaps[i, :] == gt_max_overlaps[i]) & \
+                         responsible_flags.type(torch.bool)
+                    assigned_gt_inds[max_iou_inds] = i + 1 # 若这个gt与所有anchor的iou的最大值大于min_pos_iou，把这个gt和对应的anchor也设置为正例
+                elif responsible_flags[gt_argmax_overlaps[i]]:
+                    assigned_gt_inds[gt_argmax_overlaps[i]] = i + 1
+
+        # assign labels of positive anchors
+        assigned_labels = assigned_gt_inds.new_full((num_priors, ), -1)
+        pos_inds = torch.nonzero(
+            assigned_gt_inds > 0, as_tuple=False).squeeze() # 综合anchor和gt的匹配与gt和anchor的匹配的结果，得到最终正例的anchor index
+        if pos_inds.numel() > 0:
+            assigned_labels[pos_inds] = gt_labels[assigned_gt_inds[pos_inds] -
+                                                  1] #这些anchor的类别，就是与之对应的gt的类别
+
+        return AssignResult(
+            num_gts, assigned_gt_inds, max_overlaps, labels=assigned_labels)
+
+class PseudoSampler(BaseSampler):
+    def sample(self, assign_result: AssignResult, pred_instances: InstanceData,
+               gt_instances: InstanceData, *args, **kwargs):
+        gt_bboxes = gt_instances.bboxes
+        priors = pred_instances.priors
+
+        pos_inds = torch.nonzero(
+            assign_result.gt_inds > 0, as_tuple=False).squeeze(-1).unique() # 存储的是gt的index+1,所以正例的值大于0
+        neg_inds = torch.nonzero(
+            assign_result.gt_inds == 0, as_tuple=False).squeeze(-1).unique()
+
+        gt_flags = priors.new_zeros(priors.shape[0], dtype=torch.uint8)
+        sampling_result = SamplingResult(
+            pos_inds=pos_inds,
+            neg_inds=neg_inds,
+            priors=priors,
+            gt_bboxes=gt_bboxes,
+            assign_result=assign_result,
+            gt_flags=gt_flags,
+            avg_factor_with_neg=False)
+        return sampling_result
+
+class YOLOBBoxCoder(BaseBBoxCoder):
+
+    def __init__(self, eps: float = 1e-6, **kwargs):
+        super().__init__(**kwargs)
+        self.eps = eps
+
+    def encode(self, bboxes: Union[Tensor, BaseBoxes],
+               gt_bboxes: Union[Tensor, BaseBoxes],
+               stride: Union[Tensor, int]) -> Tensor:
+        """Get box regression transformation deltas that can be used to
+        transform the ``bboxes`` into the ``gt_bboxes``.
+
+        Args:
+            bboxes (torch.Tensor or :obj:`BaseBoxes`): Source boxes,
+                e.g., anchors.
+            gt_bboxes (torch.Tensor or :obj:`BaseBoxes`): Target of the
+                transformation, e.g., ground-truth boxes.
+            stride (torch.Tensor | int): Stride of bboxes.
+
+        Returns:
+            torch.Tensor: Box transformation deltas
+        """
+        bboxes = get_box_tensor(bboxes) # anchor
+        gt_bboxes = get_box_tensor(gt_bboxes)
+        assert bboxes.size(0) == gt_bboxes.size(0)
+        assert bboxes.size(-1) == gt_bboxes.size(-1) == 4
+        x_center_gt = (gt_bboxes[..., 0] + gt_bboxes[..., 2]) * 0.5
+        y_center_gt = (gt_bboxes[..., 1] + gt_bboxes[..., 3]) * 0.5
+        w_gt = gt_bboxes[..., 2] - gt_bboxes[..., 0]
+        h_gt = gt_bboxes[..., 3] - gt_bboxes[..., 1]
+        x_center = (bboxes[..., 0] + bboxes[..., 2]) * 0.5
+        y_center = (bboxes[..., 1] + bboxes[..., 3]) * 0.5
+        w = bboxes[..., 2] - bboxes[..., 0]
+        h = bboxes[..., 3] - bboxes[..., 1]
+        w_target = torch.log((w_gt / w).clamp(min=self.eps)) # 
+        h_target = torch.log((h_gt / h).clamp(min=self.eps))
+        x_center_target = ((x_center_gt - x_center) / stride + 0.5).clamp(
+            self.eps, 1 - self.eps)
+        y_center_target = ((y_center_gt - y_center) / stride + 0.5).clamp(
+            self.eps, 1 - self.eps)
+        encoded_bboxes = torch.stack(
+            [x_center_target, y_center_target, w_target, h_target], dim=-1)
+        return encoded_bboxes
+
+    def decode(self, bboxes: Union[Tensor, BaseBoxes], pred_bboxes: Tensor,
+               stride: Union[Tensor, int]) -> Union[Tensor, BaseBoxes]:
+        """Apply transformation `pred_bboxes` to `boxes`.
+
+        Args:
+            boxes (torch.Tensor or :obj:`BaseBoxes`): Basic boxes,
+                e.g. anchors.
+            pred_bboxes (torch.Tensor): Encoded boxes with shape
+            stride (torch.Tensor | int): Strides of bboxes.
+
+        Returns:
+            Union[torch.Tensor, :obj:`BaseBoxes`]: Decoded boxes.
+        """
+        bboxes = get_box_tensor(bboxes)
+        assert pred_bboxes.size(-1) == bboxes.size(-1) == 4
+        xy_centers = (bboxes[..., :2] + bboxes[..., 2:]) * 0.5 + (
+            pred_bboxes[..., :2] - 0.5) * stride
+        whs = (bboxes[..., 2:] -
+               bboxes[..., :2]) * 0.5 * pred_bboxes[..., 2:].exp()
+        decoded_bboxes = torch.stack(
+            (xy_centers[..., 0] - whs[..., 0], xy_centers[..., 1] -
+             whs[..., 1], xy_centers[..., 0] + whs[..., 0],
+             xy_centers[..., 1] + whs[..., 1]),
+            dim=-1)
+
+        if self.use_box_type:
+            decoded_bboxes = HorizontalBoxes(decoded_bboxes)
+        return decoded_bboxes
+
+    def loss_by_feat_single(self, pred_map: Tensor, target_map: Tensor,
+                            neg_map: Tensor) -> tuple:
+        #处理每一层的loss(多batch)
+        # pred_map :(n_batch,3*85,h,w)
+        num_imgs = len(pred_map) # n_batch
+        pred_map = pred_map.permute(0, 2, 3,
+                                    1).reshape(num_imgs, -1, self.num_attrib) # (n_batch,h*w*3,85)
+        neg_mask = neg_map.float()
+        pos_mask = target_map[..., 4]
+        pos_and_neg_mask = neg_mask + pos_mask
+        pos_mask = pos_mask.unsqueeze(dim=-1)
+
+        pred_xy = pred_map[..., :2]
+        pred_wh = pred_map[..., 2:4]
+        pred_conf = pred_map[..., 4]
+        pred_label = pred_map[..., 5:]
+
+        target_xy = target_map[..., :2]
+        target_wh = target_map[..., 2:4]
+        target_conf = target_map[..., 4]
+        target_label = target_map[..., 5:]
+
+        loss_cls = self.loss_cls(pred_label, target_label, weight=pos_mask)
+        # CrossEntropyLoss(binary_cross_entropy_with_logits) pred_label:(n_batch,h*w*3,80); target_label:(n_batch,h*w*3,80)最后一维是onehot编码；binary_cross_entropy_with_logits先会element_wise做sigmoid,再进行binary_cross（多标签分类）
+        loss_conf = self.loss_conf(
+            pred_conf, target_conf, weight=pos_and_neg_mask) # CrossEntropyLoss(binary_cross_entropy_with_logits)
+        loss_xy = self.loss_xy(pred_xy, target_xy, weight=pos_mask) 
+        # CrossEntropyLoss(binary_cross_entropy_with_logits)，这里其实应该用MSELoss
+        loss_wh = self.loss_wh(pred_wh, target_wh, weight=pos_mask) # MSELoss
+
+        return loss_cls, loss_conf, loss_xy, loss_wh
+```
+
 
 # YOLO_V4
 目标检测整体结构图：\
