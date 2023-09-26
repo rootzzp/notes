@@ -29,6 +29,8 @@
   - [Backbone](#backbone-4)
   - [Neck](#neck-3)
   - [Head](#head-5)
+  - [MMdetection 对应解释](#mmdetection-对应解释-1)
+    - [CSP](#csp)
 - [YOLO\_X](#yolo_x)
   - [Backbone](#backbone-5)
   - [Neck](#neck-4)
@@ -43,6 +45,8 @@
   - [Neck](#neck-6)
   - [Head](#head-8)
 
+<!-- /TOC -->
+<!-- /TOC -->
 <!-- /TOC -->
 
 <!-- /TOC -->
@@ -839,6 +843,122 @@ YOLOv5的Head侧在YOLOv4的基础上引入了Auto Learning Bounding Box Anchors
 ![YOLO_V5](images/deeplearning/networks/yolo_v5/yolo_v5_.png)
 比起yolov4中一个ground truth只能匹配一个正样本，YOLOv5能够在多个grid cell中都分配到正样本，有助于训练加速和正负样本平衡
 cite: [github](https://github.com/ultralytics/yolov5)
+
+## MMdetection 对应解释
+### CSP
+初衷是减少计算量并且增强梯度的表现。主要思想是：在输入block之前，将输入分为两个部分，其中一部分通过block进行计算，另一部分直接通过一个shortcut进行concatenate
+```python
+# 常规的跳连结构
+class DarknetBottleneck(BaseModule):
+    def __init__(self,
+                 in_channels: int,
+                 out_channels: int,
+                 expansion: float = 0.5,
+                 add_identity: bool = True,
+                 use_depthwise: bool = False,
+                 conv_cfg: OptConfigType = None,
+                 norm_cfg: ConfigType = dict(
+                     type='BN', momentum=0.03, eps=0.001),
+                 act_cfg: ConfigType = dict(type='Swish'),
+                 init_cfg: OptMultiConfig = None) -> None:
+        super().__init__(init_cfg=init_cfg)
+        hidden_channels = int(out_channels * expansion)
+        conv = DepthwiseSeparableConvModule if use_depthwise else ConvModule
+        self.conv1 = ConvModule(
+            in_channels,
+            hidden_channels,
+            1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.conv2 = conv(
+            hidden_channels,
+            out_channels,
+            3,
+            stride=1,
+            padding=1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.add_identity = \
+            add_identity and in_channels == out_channels
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward function."""
+        identity = x
+        out = self.conv1(x)
+        out = self.conv2(out)
+
+        if self.add_identity:
+            return out + identity
+        else:
+            return out
+class CSPLayer(BaseModule):
+    def __init__(self,
+                 in_channels: int,
+                 out_channels: int,
+                 expand_ratio: float = 0.5,
+                 num_blocks: int = 1,
+                 add_identity: bool = True,
+                 use_depthwise: bool = False,
+                 use_cspnext_block: bool = False,
+                 channel_attention: bool = False,
+                 conv_cfg: OptConfigType = None,
+                 norm_cfg: ConfigType = dict(
+                     type='BN', momentum=0.03, eps=0.001),
+                 act_cfg: ConfigType = dict(type='Swish'),
+                 init_cfg: OptMultiConfig = None) -> None:
+        super().__init__(init_cfg=init_cfg)
+        block = DarknetBottleneck
+        mid_channels = int(out_channels * expand_ratio)
+        self.channel_attention = channel_attention
+        self.main_conv = ConvModule(
+            in_channels,
+            mid_channels,
+            1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.short_conv = ConvModule(
+            in_channels,
+            mid_channels,
+            1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.final_conv = ConvModule(
+            2 * mid_channels,
+            out_channels,
+            1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+
+        self.blocks = nn.Sequential(*[
+            block(
+                mid_channels,
+                mid_channels,
+                1.0,
+                add_identity,
+                use_depthwise,
+                conv_cfg=conv_cfg,
+                norm_cfg=norm_cfg,
+                act_cfg=act_cfg) for _ in range(num_blocks)
+        ])
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward function."""
+        x_short = self.short_conv(x)
+
+        x_main = self.main_conv(x)
+        x_main = self.blocks(x_main)
+
+        x_final = torch.cat((x_main, x_short), dim=1)
+
+        return self.final_conv(x_final)
+```
+![CSP](images/deeplearning/networks/yolo_v5/csp.drawio.svg)
+
 
 # YOLO_X
 ## Backbone
