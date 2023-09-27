@@ -31,20 +31,25 @@
   - [Head](#head-5)
   - [MMdetection 对应解释](#mmdetection-对应解释-1)
     - [CSP](#csp)
+    - [BackBone](#backbone-5)
+    - [Neck](#neck-4)
+    - [Head](#head-6)
 - [YOLO\_X](#yolo_x)
-  - [Backbone](#backbone-5)
-  - [Neck](#neck-4)
-  - [Head](#head-6)
-- [YOLO\_V6](#yolo_v6)
-  - [整体结构：](#整体结构)
   - [Backbone](#backbone-6)
   - [Neck](#neck-5)
   - [Head](#head-7)
-- [YOLO\_V7](#yolo_v7)
+- [YOLO\_V6](#yolo_v6)
+  - [整体结构：](#整体结构)
   - [Backbone](#backbone-7)
   - [Neck](#neck-6)
   - [Head](#head-8)
+- [YOLO\_V7](#yolo_v7)
+  - [Backbone](#backbone-8)
+  - [Neck](#neck-7)
+  - [Head](#head-9)
 
+<!-- /TOC -->
+<!-- /TOC -->
 <!-- /TOC -->
 <!-- /TOC -->
 <!-- /TOC -->
@@ -958,6 +963,832 @@ class CSPLayer(BaseModule):
         return self.final_conv(x_final)
 ```
 ![CSP](images/deeplearning/networks/yolo_v5/csp.drawio.svg)
+### BackBone
+和YOLOv3类似，采用DarkNet(P5),部分网络中插入了CSP模块
+```python
+class YOLOv5CSPDarknet(BaseModule):
+    # From left to right:
+    # in_channels, out_channels, num_blocks, add_identity, use_spp
+    arch_settings = {
+        'P5': [[64, 128, 3, True, False], [128, 256, 9, True, False],
+               [256, 512, 9, True, False], [512, 1024, 3, False, True]],
+        'P6': [[64, 128, 3, True, False], [128, 256, 9, True, False],
+               [256, 512, 9, True, False], [512, 768, 3, True, False],
+               [768, 1024, 3, False, True]]
+    }
+
+    def __init__(self,
+                 arch='P5',
+                 deepen_factor=1.0,
+                 widen_factor=1.0,
+                 out_indices=(2, 3, 4),
+                 frozen_stages=-1,
+                 input_channels: int = 3,
+                 use_depthwise=False,
+                 arch_ovewrite=None,
+                 spp_kernal_sizes=(5, 9, 13),
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
+                 act_cfg=dict(type='Swish'),
+                 norm_eval=False,
+                 init_cfg=dict(
+                     type='Kaiming',
+                     layer='Conv2d',
+                     a=math.sqrt(5),
+                     distribution='uniform',
+                     mode='fan_in',
+                     nonlinearity='leaky_relu')):
+        super().__init__(init_cfg)
+        arch_setting = self.arch_settings[arch]
+        if arch_ovewrite:
+            arch_setting = arch_ovewrite
+        assert set(out_indices).issubset(
+            i for i in range(len(arch_setting) + 1))
+        if frozen_stages not in range(-1, len(arch_setting) + 1):
+            raise ValueError('frozen_stages must be in range(-1, '
+                             'len(arch_setting) + 1). But received '
+                             f'{frozen_stages}')
+
+        self.out_indices = out_indices
+        self.frozen_stages = frozen_stages
+        self.use_depthwise = use_depthwise
+        self.norm_eval = norm_eval
+        self.norm_cfg = norm_cfg
+        self.act_cfg = act_cfg
+        conv = DepthwiseSeparableConvModule if use_depthwise else ConvModule
+
+        self.stem =ConvModule(
+            input_channels,
+            make_divisible(arch_setting[0][0], widen_factor),
+            kernel_size=6,
+            stride=2,
+            padding=2,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.layers = ['stem']
+
+        for i, (in_channels, out_channels, num_blocks, add_identity,
+                use_spp) in enumerate(arch_setting):
+            in_channels = make_divisible(in_channels, widen_factor)
+            out_channels = make_divisible(out_channels, widen_factor)
+            num_blocks = make_round(num_blocks, deepen_factor)
+            stage = []
+            conv_layer = ConvModule(
+                in_channels,
+                out_channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg)
+            stage.append(conv_layer)
+            csp_layer = CSPLayer(
+                out_channels,
+                out_channels,
+                num_blocks=num_blocks,
+                add_identity=add_identity,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg)
+            stage.append(csp_layer)
+            if use_spp:
+                spp = SPPFBottleneck(
+                    out_channels,
+                    out_channels,
+                    kernel_sizes=5,
+                    norm_cfg=self.norm_cfg,
+                    act_cfg=self.act_cfg)
+                stage.append(spp)
+            self.add_module(f'stage{i + 1}', nn.Sequential(*stage))
+            self.layers.append(f'stage{i + 1}')
+
+    def forward(self, x):
+        outs = []
+        for i, layer_name in enumerate(self.layers):
+            layer = getattr(self, layer_name)
+            x = layer(x)
+            if i in self.out_indices:
+                outs.append(x)
+        return tuple(outs)
+
+class SPPFBottleneck(BaseModule):
+    """Spatial pyramid pooling - Fast (SPPF) layer """
+    # SPPF比SPP运输速度快，连续三个kernel_size=5的pooling等价于SPP中分别进行kernel=（5，8，13）的三个pooling
+    def __init__(self,
+                 in_channels: int,
+                 out_channels: int,
+                 kernel_sizes=5,
+                 use_conv_first: bool = True,
+                 mid_channels_scale: float = 0.5,
+                 conv_cfg=None,
+                 norm_cfg=dict(
+                     type='BN', momentum=0.03, eps=0.001),
+                 act_cfg=dict(type='SiLU', inplace=True),
+                 init_cfg=None):
+        super().__init__(init_cfg)
+        mid_channels = int(in_channels * mid_channels_scale)
+        self.conv1 = ConvModule(
+            in_channels,
+            mid_channels,
+            1,
+            stride=1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.poolings = nn.MaxPool2d(
+                kernel_size=kernel_sizes, stride=1, padding=kernel_sizes // 2)
+        conv2_in_channels = mid_channels * 4
+
+        self.conv2 = ConvModule(
+            conv2_in_channels,
+            out_channels,
+            1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+
+    def forward(self, x):
+        """Forward process
+        Args:
+            x (Tensor): The input tensor.
+        """
+        if self.conv1:
+            x = self.conv1(x)
+        y1 = self.poolings(x)
+        y2 = self.poolings(y1)
+        x = torch.cat([x, y1, y2, self.poolings(y2)], dim=1)
+        x = self.conv2(x)
+        return x
+```
+### Neck
+pfpan
+```python
+class YOLOv5PAFPN(BaseModule):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 deepen_factor: float = 1.0,
+                 widen_factor: float = 1.0,
+                 num_csp_blocks=3,
+                 use_depthwise=False,
+                 upsample_feats_cat_first=True,
+                 upsample_cfg=dict(scale_factor=2, mode='nearest'),
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
+                 act_cfg=dict(type='Swish'),
+                 init_cfg=dict(
+                     type='Kaiming',
+                     layer='Conv2d',
+                     a=math.sqrt(5),
+                     distribution='uniform',
+                     mode='fan_in',
+                     nonlinearity='leaky_relu')):
+        super(YOLOv5PAFPN, self).__init__(init_cfg)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.deepen_factor = deepen_factor
+        self.widen_factor = widen_factor
+        self.num_csp_blocks = num_csp_blocks
+        self.norm_cfg = norm_cfg
+        self.act_cfg = act_cfg
+        self.upsample_feats_cat_first = upsample_feats_cat_first
+
+        conv = ConvModule
+
+        self.reduce_layers = nn.ModuleList()
+        for idx in range(len(in_channels)):
+            self.reduce_layers.append(self.build_reduce_layer(idx))
+
+        # build top-down blocks
+        self.upsample_layers = nn.ModuleList()
+        self.top_down_layers = nn.ModuleList()
+        for idx in range(len(in_channels) - 1, 0, -1):
+            self.upsample_layers.append(self.build_upsample_layer(idx))
+            self.top_down_layers.append(self.build_top_down_layer(idx))
+
+        # build bottom-up blocks
+        self.downsample_layers = nn.ModuleList()
+        self.bottom_up_layers = nn.ModuleList()
+        for idx in range(len(in_channels) - 1):
+            self.downsample_layers.append(self.build_downsample_layer(idx))
+            self.bottom_up_layers.append(self.build_bottom_up_layer(idx))
+
+        self.out_layers = nn.ModuleList()
+        for idx in range(len(in_channels)):
+            self.out_layers.append(self.build_out_layer(idx))
+            
+    def build_reduce_layer(self, idx: int) -> nn.Module:
+        """build reduce layer.
+
+        Args:
+            idx (int): layer idx.
+
+        Returns:
+            nn.Module: The reduce layer.
+        """
+        if idx == len(self.in_channels) - 1:
+            layer = ConvModule(
+                make_divisible(self.in_channels[idx], self.widen_factor),
+                make_divisible(self.in_channels[idx - 1], self.widen_factor),
+                1,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg)
+        else:
+            layer = nn.Identity()
+
+        return layer
+
+    def build_top_down_layer(self, idx: int):
+        """build top down layer.
+
+        Args:
+            idx (int): layer idx.
+
+        Returns:
+            nn.Module: The top down layer.
+        """
+
+        if idx == 1:
+            return CSPLayer(
+                make_divisible(self.in_channels[idx - 1] * 2,
+                               self.widen_factor),
+                make_divisible(self.in_channels[idx - 1], self.widen_factor),
+                num_blocks=make_round(self.num_csp_blocks, self.deepen_factor),
+                add_identity=False,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg)
+        else:
+            return nn.Sequential(
+                CSPLayer(
+                    make_divisible(self.in_channels[idx - 1] * 2,
+                                   self.widen_factor),
+                    make_divisible(self.in_channels[idx - 1],
+                                   self.widen_factor),
+                    num_blocks=make_round(self.num_csp_blocks,
+                                          self.deepen_factor),
+                    add_identity=False,
+                    norm_cfg=self.norm_cfg,
+                    act_cfg=self.act_cfg),
+                ConvModule(
+                    make_divisible(self.in_channels[idx - 1],
+                                   self.widen_factor),
+                    make_divisible(self.in_channels[idx - 2],
+                                   self.widen_factor),
+                    kernel_size=1,
+                    norm_cfg=self.norm_cfg,
+                    act_cfg=self.act_cfg))
+
+    def build_downsample_layer(self, idx: int) -> nn.Module:
+        """build downsample layer.
+
+        Args:
+            idx (int): layer idx.
+
+        Returns:
+            nn.Module: The downsample layer.
+        """
+        return ConvModule(
+            make_divisible(self.in_channels[idx], self.widen_factor),
+            make_divisible(self.in_channels[idx], self.widen_factor),
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            norm_cfg=self.norm_cfg,
+            act_cfg=self.act_cfg)
+    
+    def build_upsample_layer(self, *args, **kwargs):
+        """build upsample layer."""
+        return nn.Upsample(scale_factor=2, mode='nearest')
+
+    def build_bottom_up_layer(self, idx: int) -> nn.Module:
+        """build bottom up layer.
+
+        Args:
+            idx (int): layer idx.
+
+        Returns:
+            nn.Module: The bottom up layer.
+        """
+        return CSPLayer(
+            make_divisible(self.in_channels[idx] * 2, self.widen_factor),
+            make_divisible(self.in_channels[idx + 1], self.widen_factor),
+            num_blocks=make_round(self.num_csp_blocks, self.deepen_factor),
+            add_identity=False,
+            norm_cfg=self.norm_cfg,
+            act_cfg=self.act_cfg)
+    
+    def build_out_layer(self, *args, **kwargs) -> nn.Module:
+        """build out layer."""
+        return nn.Identity()
+    
+    def forward(self, inputs):
+        """Forward function."""
+        # input是1/8,1/16,1/32的顺序
+        assert len(inputs) == len(self.in_channels)
+        # reduce layers
+        reduce_outs = []
+        for idx in range(len(self.in_channels)):
+            reduce_outs.append(self.reduce_layers[idx](inputs[idx]))
+
+        # top-down path
+        """
+        2  1/32 feat_high
+        1  1/16 feat_low
+        0  1/8  
+        """
+        inner_outs = [reduce_outs[-1]]
+        for idx in range(len(self.in_channels) - 1, 0, -1):
+            feat_high = inner_outs[0]
+            feat_low = reduce_outs[idx - 1]
+            upsample_feat = self.upsample_layers[len(self.in_channels) - 1 -
+                                                 idx](
+                                                     feat_high)
+            if self.upsample_feats_cat_first:
+                top_down_layer_inputs = torch.cat([upsample_feat, feat_low], 1)
+            else:
+                top_down_layer_inputs = torch.cat([feat_low, upsample_feat], 1)
+            inner_out = self.top_down_layers[len(self.in_channels) - 1 - idx](
+                top_down_layer_inputs) # top_down_layers 只用到0,1
+            inner_outs.insert(0, inner_out)
+
+        # bottom-up path
+        """
+        inner_outs:
+        2  1/32 
+        1  1/16 feat_high
+        0  1/8  feat_low
+        """
+        outs = [inner_outs[0]]
+        for idx in range(len(self.in_channels) - 1):
+            feat_low = outs[-1]
+            feat_high = inner_outs[idx + 1]
+            downsample_feat = self.downsample_layers[idx](feat_low)
+            out = self.bottom_up_layers[idx](
+                torch.cat([downsample_feat, feat_high], 1))# bottom_up_layers 也只用到0,1
+            outs.append(out)
+
+        # out_layers
+        results = []
+        for idx in range(len(self.in_channels)):
+            results.append(self.out_layers[idx](outs[idx]))
+
+        return tuple(results)
+```
+![pafpn](images/deeplearning/networks/yolo_v5/ppp.drawio.svg)
+
+### Head
+```python
+class YOLOv5HeadModule(BaseModule):
+    """YOLOv5Head head module used in `YOLOv5`.
+    网络前向计算部分，只涉及到卷积这些，不用管样本分配，loss等
+    """
+    def __init__(self,
+                 num_classes: int,
+                 in_channels: Union[int, Sequence],
+                 widen_factor: float = 1.0,
+                 num_base_priors: int = 3,
+                 featmap_strides: Sequence[int] = (8, 16, 32),
+                 init_cfg: OptMultiConfig = None):
+        super().__init__(init_cfg=init_cfg)
+        self.num_classes = num_classes
+        self.widen_factor = widen_factor
+
+        self.featmap_strides = featmap_strides
+        self.num_out_attrib = 5 + self.num_classes
+        self.num_levels = len(self.featmap_strides)
+        self.num_base_priors = num_base_priors
+
+        if isinstance(in_channels, int):
+            self.in_channels = [make_divisible(in_channels, widen_factor)
+                                ] * self.num_levels
+        else:
+            self.in_channels = [
+                make_divisible(i, widen_factor) for i in in_channels
+            ]
+
+        self._init_layers()
+
+    def _init_layers(self):
+        """initialize conv layers in YOLOv5 head."""
+        self.convs_pred = nn.ModuleList()
+        for i in range(self.num_levels):
+            conv_pred = nn.Conv2d(self.in_channels[i],
+                                  self.num_base_priors * self.num_out_attrib,
+                                  1)
+
+            self.convs_pred.append(conv_pred)
+
+    def init_weights(self):
+        """Initialize the bias of YOLOv5 head."""
+        super().init_weights()
+        for mi, s in zip(self.convs_pred, self.featmap_strides):  # from
+            b = mi.bias.data.view(self.num_base_priors, -1)
+            # obj (8 objects per 640 image)
+            b.data[:, 4] += math.log(8 / (640 / s)**2)
+            # NOTE: The following initialization can only be performed on the
+            # bias of the category, if the following initialization is
+            # performed on the bias of mask coefficient,
+            # there will be a significant decrease in mask AP.
+            b.data[:, 5:5 + self.num_classes] += math.log(
+                0.6 / (self.num_classes - 0.999999))
+
+            mi.bias.data = b.view(-1)
+
+    def forward(self, x) -> tuple:
+        assert len(x) == self.num_levels
+        pred_maps = []
+        for i in range(self.num_levels):
+            pred_map = self.convs_pred[i](x[i])
+            pred_maps.append(pred_map)
+        return tuple(pred_maps),
+
+    def forward_single(self, x: Tensor,
+                       convs: nn.Module) -> Tuple[Tensor, Tensor, Tensor]:
+        """Forward feature of a single scale level."""
+
+        pred_map = convs(x)
+        return pred_map
+
+class YOLOv5Head(BaseDenseHead):
+    """YOLOV3Head Paper link: https://arxiv.org/abs/1804.02767.
+    调用顺序：base_dense_head.py的loss->head的forward->loss_by_feat
+    """
+
+    def __init__(self,
+                 head_module: ConfigType,
+                 anchor_generator: ConfigType = dict(
+                     type='YOLOAnchorGenerator',
+                     base_sizes=[[(116, 90), (156, 198), (373, 326)],
+                                 [(30, 61), (62, 45), (59, 119)],
+                                 [(10, 13), (16, 30), (33, 23)]],
+                     strides=[32, 16, 8]),
+                 bbox_coder: ConfigType = dict(type='YOLOBBoxCoder'),
+                 one_hot_smoother: float = 0.,
+                 conv_cfg: OptConfigType = None,
+                 norm_cfg: ConfigType = dict(type='BN', requires_grad=True),
+                 act_cfg: ConfigType = dict(
+                     type='LeakyReLU', negative_slope=0.1),
+                 loss_cls: ConfigType = dict(
+                     type='CrossEntropyLoss',
+                     use_sigmoid=True,
+                     reduction='mean',
+                     loss_weight=0.5),
+                 loss_bbox: ConfigType = dict(
+                     type='IoULoss',
+                     iou_mode='ciou',
+                     bbox_format='xywh',
+                     eps=1e-7,
+                     reduction='mean',
+                     loss_weight=0.05,
+                     return_iou=True),
+                 loss_obj: ConfigType = dict(
+                     type='mmdet.CrossEntropyLoss',
+                     use_sigmoid=True,
+                     reduction='mean',
+                     loss_weight=1.0),
+                 prior_match_thr: float = 4.0,
+                 near_neighbor_thr: float = 0.5,
+                 ignore_iof_thr: float = -1.0,
+                 obj_level_weights: List[float] = [4.0, 1.0, 0.4],
+                 train_cfg: OptConfigType = None,
+                 test_cfg: OptConfigType = None) -> None:
+        super().__init__(init_cfg=None)
+        # Check params
+
+        self.head_module = MODELS.build(head_module)
+        self.num_classes = self.head_module.num_classes
+        self.featmap_strides = self.head_module.featmap_strides
+        self.num_levels = len(self.featmap_strides)
+
+        self.in_channels = head_module.in_channels
+        self.train_cfg = train_cfg
+        self.test_cfg = test_cfg
+        if self.train_cfg:
+            self.assigner = TASK_UTILS.build(self.train_cfg['assigner'])
+            if train_cfg.get('sampler', None) is not None:
+                self.sampler = TASK_UTILS.build(
+                    self.train_cfg['sampler'], context=self)
+            else:
+                self.sampler = PseudoSampler()
+
+        self.one_hot_smoother = one_hot_smoother
+
+        self.conv_cfg = conv_cfg
+        self.norm_cfg = norm_cfg
+        self.act_cfg = act_cfg
+
+        self.bbox_coder = TASK_UTILS.build(bbox_coder)
+
+        self.prior_generator = TASK_UTILS.build(anchor_generator)
+
+        self.loss_cls: nn.Module = MODELS.build(loss_cls)
+        self.loss_bbox: nn.Module = MODELS.build(loss_bbox)
+        self.loss_obj: nn.Module = MODELS.build(loss_obj)
+
+        self.num_levels = len(self.featmap_strides)
+        self.featmap_sizes = [torch.empty(1)] * self.num_levels
+
+        self.prior_match_thr = prior_match_thr
+        self.near_neighbor_thr = near_neighbor_thr
+        self.obj_level_weights = obj_level_weights
+        self.ignore_iof_thr = ignore_iof_thr
+
+        self.num_base_priors = self.prior_generator.num_base_priors[0]
+        assert len(
+            self.prior_generator.num_base_priors) == len(self.featmap_strides)
+        self.special_init()
+
+    @property
+    def num_attrib(self) -> int:
+        return 5 + self.num_classes
+
+    def special_init(self):
+        assert len(self.obj_level_weights) == len(
+            self.featmap_strides) == self.num_levels
+        if self.prior_match_thr != 4.0:
+            print_log(
+                "!!!Now, you've changed the prior_match_thr "
+                'parameter to something other than 4.0. Please make sure '
+                'that you have modified both the regression formula in '
+                'bbox_coder and before loss_box computation, '
+                'otherwise the accuracy may be degraded!!!')
+
+        if self.num_classes == 1:
+            print_log('!!!You are using `YOLOv5Head` with num_classes == 1.'
+                      ' The loss_cls will be 0. This is a normal phenomenon.')
+
+        priors_base_sizes = torch.tensor(
+            self.prior_generator.base_sizes, dtype=torch.float)
+        featmap_strides = torch.tensor(
+            self.featmap_strides, dtype=torch.float)[:, None, None]
+        self.register_buffer(
+            'priors_base_sizes',
+            priors_base_sizes / featmap_strides,
+            persistent=False)
+
+        grid_offset = torch.tensor([
+            [0, 0],  # center
+            [1, 0],  # left
+            [0, 1],  # up
+            [-1, 0],  # right
+            [0, -1],  # bottom
+        ]).float()
+        self.register_buffer(
+            'grid_offset', grid_offset[:, None], persistent=False)
+
+        prior_inds = torch.arange(self.num_base_priors).float().view(
+            self.num_base_priors, 1)
+        self.register_buffer('prior_inds', prior_inds, persistent=False)
+
+    def forward(self, x: Tuple[Tensor, ...]) -> tuple:
+        out = self.head_module(x)
+        return tuple(out)
+
+    def predict_by_feat(self,
+                        pred_maps: Sequence[Tensor],
+                        batch_img_metas: Optional[List[dict]],
+                        cfg: OptConfigType = None,
+                        rescale: bool = False,
+                        with_nms: bool = True) -> InstanceList:
+        assert len(pred_maps) == self.num_levels
+        cfg = self.test_cfg if cfg is None else cfg
+        cfg = copy.deepcopy(cfg)
+
+        num_imgs = len(batch_img_metas)
+        featmap_sizes = [pred_map.shape[-2:] for pred_map in pred_maps]
+
+        mlvl_anchors = self.prior_generator.grid_priors(
+            featmap_sizes, device=pred_maps[0].device)
+        flatten_preds = []
+        flatten_strides = []
+        for pred, stride in zip(pred_maps, self.featmap_strides):
+            pred = pred.permute(0, 2, 3, 1).reshape(num_imgs, -1,
+                                                    self.num_attrib)
+            pred[..., :2].sigmoid_()
+            flatten_preds.append(pred)
+            flatten_strides.append(
+                pred.new_tensor(stride).expand(pred.size(1)))
+
+        flatten_preds = torch.cat(flatten_preds, dim=1)
+        flatten_bbox_preds = flatten_preds[..., :4]
+        flatten_objectness = flatten_preds[..., 4].sigmoid()
+        flatten_cls_scores = flatten_preds[..., 5:].sigmoid()
+        flatten_anchors = torch.cat(mlvl_anchors)
+        flatten_strides = torch.cat(flatten_strides)
+        flatten_bboxes = self.bbox_coder.decode(flatten_anchors,
+                                                flatten_bbox_preds,
+                                                flatten_strides.unsqueeze(-1))
+        results_list = []
+        for (bboxes, scores, objectness,
+             img_meta) in zip(flatten_bboxes, flatten_cls_scores,
+                              flatten_objectness, batch_img_metas):
+            # Filtering out all predictions with conf < conf_thr
+            conf_thr = cfg.get('conf_thr', -1)
+            if conf_thr > 0:
+                conf_inds = objectness >= conf_thr
+                bboxes = bboxes[conf_inds, :]
+                scores = scores[conf_inds, :]
+                objectness = objectness[conf_inds]
+
+            score_thr = cfg.get('score_thr', 0)
+            nms_pre = cfg.get('nms_pre', -1)
+            scores, labels, keep_idxs, _ = filter_scores_and_topk(
+                scores, score_thr, nms_pre)
+
+            results = InstanceData(
+                scores=scores,
+                labels=labels,
+                bboxes=bboxes[keep_idxs],
+                score_factors=objectness[keep_idxs],
+            )
+            results = self._bbox_post_process(
+                results=results,
+                cfg=cfg,
+                rescale=rescale,
+                with_nms=with_nms,
+                img_meta=img_meta)
+            results_list.append(results)
+        return results_list
+
+    def loss_by_feat(
+            self,
+            pred_maps: Sequence[Tensor],
+            batch_gt_instances: InstanceList,
+            batch_img_metas: List[dict],
+            batch_gt_instances_ignore: OptInstanceList = None) -> dict:
+        
+        # 1. Convert gt to norm format
+        batch_targets_normed = self._convert_gt_to_norm_format(
+            batch_gt_instances, batch_img_metas)
+
+        device = pred_maps[0].device
+        loss_cls = torch.zeros(1, device=device)
+        loss_box = torch.zeros(1, device=device)
+        loss_obj = torch.zeros(1, device=device)
+        scaled_factor = torch.ones(7, device=device)
+
+        for i in range(self.num_levels):
+            batch_size, _, h, w = pred_maps[i].shape
+            pred_map = pred_maps[i].view(batch_size, self.num_base_priors, self.num_attrib, h, w)
+            cls_scores = pred_map[:, :, 5:, ...].reshape(batch_size, -1, h, w)
+            bbox_preds = pred_map[:, :, :4, ...].reshape(batch_size, -1, h, w)
+            objectnesses = pred_map[:, :, 4:5, ...].reshape(batch_size, -1, h, w)
+            batch_size, _, h, w = bbox_preds.shape
+            target_obj = torch.zeros_like(objectnesses)
+
+            # empty gt bboxes
+            if batch_targets_normed.shape[1] == 0:
+                loss_box += bbox_preds.sum() * 0
+                loss_cls += cls_scores.sum() * 0
+                loss_obj += self.loss_obj(
+                    objectnesses, target_obj) * self.obj_level_weights[i]
+                continue
+
+            priors_base_sizes_i = self.priors_base_sizes[i]
+            # feature map scale whwh
+            scaled_factor[2:6] = torch.tensor(
+                bbox_preds.shape)[[3, 2, 3, 2]]
+            # Scale batch_targets from range 0-1 to range 0-features_maps size.
+            # (num_base_priors, num_bboxes, 7)
+            batch_targets_scaled = batch_targets_normed * scaled_factor
+
+            # 2. Shape match
+            wh_ratio = batch_targets_scaled[...,
+                                            4:6] / priors_base_sizes_i[:, None]
+            match_inds = torch.max(
+                wh_ratio, 1 / wh_ratio).max(2)[0] < self.prior_match_thr
+            batch_targets_scaled = batch_targets_scaled[match_inds]
+
+            # no gt bbox matches anchor
+            if batch_targets_scaled.shape[0] == 0:
+                loss_box += bbox_preds.sum() * 0
+                loss_cls += cls_scores.sum() * 0
+                loss_obj += self.loss_obj(
+                    objectnesses, target_obj) * self.obj_level_weights[i]
+                continue
+
+            # 3. Positive samples with additional neighbors
+
+            # check the left, up, right, bottom sides of the
+            # targets grid, and determine whether assigned
+            # them as positive samples as well.
+            batch_targets_cxcy = batch_targets_scaled[:, 2:4]
+            grid_xy = scaled_factor[[2, 3]] - batch_targets_cxcy
+            left, up = ((batch_targets_cxcy % 1 < self.near_neighbor_thr) &
+                        (batch_targets_cxcy > 1)).T
+            right, bottom = ((grid_xy % 1 < self.near_neighbor_thr) &
+                             (grid_xy > 1)).T
+            offset_inds = torch.stack(
+                (torch.ones_like(left), left, up, right, bottom))
+
+            batch_targets_scaled = batch_targets_scaled.repeat(
+                (5, 1, 1))[offset_inds]
+            retained_offsets = self.grid_offset.repeat(1, offset_inds.shape[1],
+                                                       1)[offset_inds]
+
+            # prepare pred results and positive sample indexes to
+            # calculate class loss and bbox lo
+            _chunk_targets = batch_targets_scaled.chunk(4, 1)
+            img_class_inds, grid_xy, grid_wh, priors_inds = _chunk_targets
+            priors_inds, (img_inds, class_inds) = priors_inds.long().view(
+                -1), img_class_inds.long().T
+
+            grid_xy_long = (grid_xy -
+                            retained_offsets * self.near_neighbor_thr).long()
+            grid_x_inds, grid_y_inds = grid_xy_long.T
+            bboxes_targets = torch.cat((grid_xy - grid_xy_long, grid_wh), 1)
+
+            # 4. Calculate loss
+            # bbox loss
+            retained_bbox_pred = bbox_preds.reshape(
+                batch_size, self.num_base_priors, -1, h,
+                w)[img_inds, priors_inds, :, grid_y_inds, grid_x_inds]
+            priors_base_sizes_i = priors_base_sizes_i[priors_inds]
+            decoded_bbox_pred = self._decode_bbox_to_xywh(
+                retained_bbox_pred, priors_base_sizes_i)
+            loss_box_i, iou = self.loss_bbox(decoded_bbox_pred, bboxes_targets)
+            loss_box += loss_box_i
+
+            # obj loss
+            iou = iou.detach().clamp(0)
+            target_obj[img_inds, priors_inds, grid_y_inds,
+                       grid_x_inds] = iou.type(target_obj.dtype)
+            loss_obj += self.loss_obj(objectnesses,
+                                      target_obj) * self.obj_level_weights[i]
+
+            # cls loss
+            if self.num_classes > 1:
+                pred_cls_scores = cls_scores.reshape(
+                    batch_size, self.num_base_priors, -1, h,
+                    w)[img_inds, priors_inds, :, grid_y_inds, grid_x_inds]
+
+                target_class = torch.full_like(pred_cls_scores, 0.)
+                target_class[range(batch_targets_scaled.shape[0]),
+                             class_inds] = 1.
+                loss_cls += self.loss_cls(pred_cls_scores, target_class)
+            else:
+                loss_cls += cls_scores.sum() * 0
+
+        return dict(
+            loss_cls=loss_cls * batch_size ,
+            loss_obj=loss_obj * batch_size ,
+            loss_bbox=loss_box * batch_size)
+    
+    def _decode_bbox_to_xywh(self, bbox_pred, priors_base_sizes) -> Tensor:
+        bbox_pred = bbox_pred.sigmoid()
+        pred_xy = bbox_pred[:, :2] * 2 - 0.5
+        pred_wh = (bbox_pred[:, 2:] * 2)**2 * priors_base_sizes
+        decoded_bbox_pred = torch.cat((pred_xy, pred_wh), dim=-1)
+        return decoded_bbox_pred
+    
+    def _convert_gt_to_norm_format(self,
+                                   batch_gt_instances: Sequence[InstanceData],
+                                   batch_img_metas: Sequence[dict]) -> Tensor:
+        if isinstance(batch_gt_instances, torch.Tensor):
+            # fast version
+            img_shape = batch_img_metas[0]['batch_input_shape']
+            gt_bboxes_xyxy = batch_gt_instances[:, 2:]
+            xy1, xy2 = gt_bboxes_xyxy.split((2, 2), dim=-1)
+            gt_bboxes_xywh = torch.cat([(xy2 + xy1) / 2, (xy2 - xy1)], dim=-1)
+            gt_bboxes_xywh[:, 1::2] /= img_shape[0]
+            gt_bboxes_xywh[:, 0::2] /= img_shape[1]
+            batch_gt_instances[:, 2:] = gt_bboxes_xywh
+
+            # (num_base_priors, num_bboxes, 6)
+            batch_targets_normed = batch_gt_instances.repeat(
+                self.num_base_priors, 1, 1)
+        else:
+            batch_target_list = []
+            # Convert xyxy bbox to yolo format.
+            for i, gt_instances in enumerate(batch_gt_instances):
+                img_shape = batch_img_metas[i]['batch_input_shape']
+                bboxes = gt_instances.bboxes
+                labels = gt_instances.labels
+
+                xy1, xy2 = bboxes.split((2, 2), dim=-1)
+                bboxes = torch.cat([(xy2 + xy1) / 2, (xy2 - xy1)], dim=-1)
+                # normalized to 0-1
+                bboxes[:, 1::2] /= img_shape[0]
+                bboxes[:, 0::2] /= img_shape[1]
+
+                index = bboxes.new_full((len(bboxes), 1), i)
+                # (batch_idx, label, normed_bbox)
+                target = torch.cat((index, labels[:, None].float(), bboxes),
+                                   dim=1)
+                batch_target_list.append(target)
+
+            # (num_base_priors, num_bboxes, 6)
+            batch_targets_normed = torch.cat(
+                batch_target_list, dim=0).repeat(self.num_base_priors, 1, 1)
+
+        # (num_base_priors, num_bboxes, 1)
+        batch_targets_prior_inds = self.prior_inds.repeat(
+            1, batch_targets_normed.shape[1])[..., None]
+        # (num_base_priors, num_bboxes, 7)
+        # (img_ind, labels, bbox_cx, bbox_cy, bbox_w, bbox_h, prior_ind)
+        batch_targets_normed = torch.cat(
+            (batch_targets_normed, batch_targets_prior_inds), 2)
+        return batch_targets_normed
+```
 
 
 # YOLO_X
