@@ -792,6 +792,21 @@ class YOLOBBoxCoder(BaseBBoxCoder):
 
         return loss_cls, loss_conf, loss_xy, loss_wh
 ```
+解释一下box decode及encoder；\
+encoder：计算gt与anchor的转换关系，作为计算loss的真值\
+decode：根据网络的输出(gt与anchor的转换关系)和anchor得到bbox
+
+$$b_x=\sigma(t_x)+c_x$$
+$$b_y=\sigma(t_y)+c_y$$
+$$b_w=a_w e^{t_w}$$
+$$b_h=a_h e^{t_h}$$
+其中$\sigma(t_x)$、$\sigma(t_y)$、$t_w$、$t_y$是网络的输出(很多网络末端没看到sigmoid，其实在计算loss时偷偷进行了sigmoid运算)；$c_x$、$c_y$、$a_w$、$a_h$分别为anchor的中心点，宽高\
+那么encode就是通过gt和anchor得到$\sigma(t_x)$、$\sigma(t_y)$、$t_w$、$t_y$\
+$\sigma(t_x) = b_x - c_x$(因为结果是sigma值，所以这里要保证相减后的结果在0~1范围内，通常还需要出feature的尺度)\
+$\sigma(t_y) = b_y - c_y$\
+$t_w = log(\frac{b_w}{a_w})$\
+$t_h = log(\frac{b_h}{a_h})$\
+decode则是相反的过程，要注意的是，网络末端的卷积输出结果只是$t_x$、$t_y$、$t_w$、$t_y$，还需要对$t_x$,$t_y$需要加sigmoid
 
 
 # YOLO_V4
@@ -1419,7 +1434,7 @@ class YOLOv5Head(BaseDenseHead):
                      type='YOLOAnchorGenerator',
                      base_sizes=[[(116, 90), (156, 198), (373, 326)],
                                  [(30, 61), (62, 45), (59, 119)],
-                                 [(10, 13), (16, 30), (33, 23)]],
+                                 [(10, 13), (16, 30), (33, 23)]],# anchor:(w,h)
                      strides=[32, 16, 8]),
                  bbox_coder: ConfigType = dict(type='YOLOBBoxCoder'),
                  one_hot_smoother: float = 0.,
@@ -1617,6 +1632,8 @@ class YOLOv5Head(BaseDenseHead):
             batch_gt_instances_ignore: OptInstanceList = None) -> dict:
         
         # 1. Convert gt to norm format
+        # (num_base_priors, num_bboxes, 7)
+        # (batch_index, labels, bbox_cx, bbox_cy, bbox_w, bbox_h, prior_ind) gt与anchor及anchor的index的所有组合
         batch_targets_normed = self._convert_gt_to_norm_format(
             batch_gt_instances, batch_img_metas)
 
@@ -1629,9 +1646,9 @@ class YOLOv5Head(BaseDenseHead):
         for i in range(self.num_levels):
             batch_size, _, h, w = pred_maps[i].shape
             pred_map = pred_maps[i].view(batch_size, self.num_base_priors, self.num_attrib, h, w)
-            cls_scores = pred_map[:, :, 5:, ...].reshape(batch_size, -1, h, w)
-            bbox_preds = pred_map[:, :, :4, ...].reshape(batch_size, -1, h, w)
-            objectnesses = pred_map[:, :, 4:5, ...].reshape(batch_size, -1, h, w)
+            cls_scores = pred_map[:, :, 5:, ...].reshape(batch_size, -1, h, w) #(batch_size, n_class*num_base_priors, h,w)
+            bbox_preds = pred_map[:, :, :4, ...].reshape(batch_size, -1, h, w) #(batch_size, 4*num_base_priors, h,w)
+            objectnesses = pred_map[:, :, 4:5, ...].reshape(batch_size, -1, h, w) #(batch_size, 1*num_base_priors, h,w)
             batch_size, _, h, w = bbox_preds.shape
             target_obj = torch.zeros_like(objectnesses)
 
@@ -1643,7 +1660,7 @@ class YOLOv5Head(BaseDenseHead):
                     objectnesses, target_obj) * self.obj_level_weights[i]
                 continue
 
-            priors_base_sizes_i = self.priors_base_sizes[i]
+            priors_base_sizes_i = self.priors_base_sizes[i] # 当前层的anchor,shape:(3,2)
             # feature map scale whwh
             scaled_factor[2:6] = torch.tensor(
                 bbox_preds.shape)[[3, 2, 3, 2]]
@@ -1652,11 +1669,14 @@ class YOLOv5Head(BaseDenseHead):
             batch_targets_scaled = batch_targets_normed * scaled_factor
 
             # 2. Shape match
+            # batch_targets_scaled[...,4:6] shape:(num_base_priors, num_bboxes, 2)
+            # priors_base_sizes_i shape:(3, 2)
+            # priors_base_sizes_i[:, None] shape:(3, 1, 2)
             wh_ratio = batch_targets_scaled[...,
-                                            4:6] / priors_base_sizes_i[:, None]
+                                            4:6] / priors_base_sizes_i[:, None] # shape:(num_base_priors, num_bboxes, 2)
             match_inds = torch.max(
-                wh_ratio, 1 / wh_ratio).max(2)[0] < self.prior_match_thr
-            batch_targets_scaled = batch_targets_scaled[match_inds]
+                wh_ratio, 1 / wh_ratio).max(2)[0] < self.prior_match_thr # shape:(num_base_priors, num_bboxes);宽高比的最大值小于4的为正例
+            batch_targets_scaled = batch_targets_scaled[match_inds] # shape: (match_inds中为true的个数，7)
 
             # no gt bbox matches anchor
             if batch_targets_scaled.shape[0] == 0:
@@ -1695,16 +1715,16 @@ class YOLOv5Head(BaseDenseHead):
             grid_xy_long = (grid_xy -
                             retained_offsets * self.near_neighbor_thr).long()
             grid_x_inds, grid_y_inds = grid_xy_long.T
-            bboxes_targets = torch.cat((grid_xy - grid_xy_long, grid_wh), 1)
+            bboxes_targets = torch.cat((grid_xy - grid_xy_long, grid_wh), 1) #对gt做了box encoder
 
             # 4. Calculate loss
             # bbox loss
             retained_bbox_pred = bbox_preds.reshape(
                 batch_size, self.num_base_priors, -1, h,
-                w)[img_inds, priors_inds, :, grid_y_inds, grid_x_inds]
+                w)[img_inds, priors_inds, :, grid_y_inds, grid_x_inds] #挑选出预测中的正例
             priors_base_sizes_i = priors_base_sizes_i[priors_inds]
             decoded_bbox_pred = self._decode_bbox_to_xywh(
-                retained_bbox_pred, priors_base_sizes_i)
+                retained_bbox_pred, priors_base_sizes_i) #得到网络对于bbox的输出(输出bbox与anchor的转换关系)
             loss_box_i, iou = self.loss_bbox(decoded_bbox_pred, bboxes_targets)
             loss_box += loss_box_i
 
@@ -1734,6 +1754,7 @@ class YOLOv5Head(BaseDenseHead):
             loss_bbox=loss_box * batch_size)
     
     def _decode_bbox_to_xywh(self, bbox_pred, priors_base_sizes) -> Tensor:
+        # bbox_pred;shape(n,4);
         bbox_pred = bbox_pred.sigmoid()
         pred_xy = bbox_pred[:, :2] * 2 - 0.5
         pred_wh = (bbox_pred[:, 2:] * 2)**2 * priors_base_sizes
@@ -1743,52 +1764,43 @@ class YOLOv5Head(BaseDenseHead):
     def _convert_gt_to_norm_format(self,
                                    batch_gt_instances: Sequence[InstanceData],
                                    batch_img_metas: Sequence[dict]) -> Tensor:
-        if isinstance(batch_gt_instances, torch.Tensor):
-            # fast version
-            img_shape = batch_img_metas[0]['batch_input_shape']
-            gt_bboxes_xyxy = batch_gt_instances[:, 2:]
-            xy1, xy2 = gt_bboxes_xyxy.split((2, 2), dim=-1)
-            gt_bboxes_xywh = torch.cat([(xy2 + xy1) / 2, (xy2 - xy1)], dim=-1)
-            gt_bboxes_xywh[:, 1::2] /= img_shape[0]
-            gt_bboxes_xywh[:, 0::2] /= img_shape[1]
-            batch_gt_instances[:, 2:] = gt_bboxes_xywh
+        batch_target_list = []
+        # Convert xyxy bbox to yolo format.
+        for i, gt_instances in enumerate(batch_gt_instances):
+            img_shape = batch_img_metas[i]['batch_input_shape']
+            bboxes = gt_instances.bboxes #[x1,y1,x2,y2] shanpe:(n,4)
+            labels = gt_instances.labels # shanpe:(n,1)
 
-            # (num_base_priors, num_bboxes, 6)
-            batch_targets_normed = batch_gt_instances.repeat(
-                self.num_base_priors, 1, 1)
-        else:
-            batch_target_list = []
-            # Convert xyxy bbox to yolo format.
-            for i, gt_instances in enumerate(batch_gt_instances):
-                img_shape = batch_img_metas[i]['batch_input_shape']
-                bboxes = gt_instances.bboxes
-                labels = gt_instances.labels
+            xy1, xy2 = bboxes.split((2, 2), dim=-1) #对第二个维度进行划分，划分为2(list的长度)部分，每部分分别为2，2
+            bboxes = torch.cat([(xy2 + xy1) / 2, (xy2 - xy1)], dim=-1) # shanpe:(n,4)
+            # normalized to 0-1
+            bboxes[:, 1::2] /= img_shape[0]
+            bboxes[:, 0::2] /= img_shape[1]
 
-                xy1, xy2 = bboxes.split((2, 2), dim=-1)
-                bboxes = torch.cat([(xy2 + xy1) / 2, (xy2 - xy1)], dim=-1)
-                # normalized to 0-1
-                bboxes[:, 1::2] /= img_shape[0]
-                bboxes[:, 0::2] /= img_shape[1]
+            index = bboxes.new_full((len(bboxes), 1), i) # 存储batch编号 shape:(n,1)
+            # (batch_idx, label, normed_bbox)
+            target = torch.cat((index, labels[:, None].float(), bboxes),
+                                dim=1) # shape:(n,6),每行为：这个box所在img的batch编号，标签，bbox
+            batch_target_list.append(target)
 
-                index = bboxes.new_full((len(bboxes), 1), i)
-                # (batch_idx, label, normed_bbox)
-                target = torch.cat((index, labels[:, None].float(), bboxes),
-                                   dim=1)
-                batch_target_list.append(target)
-
-            # (num_base_priors, num_bboxes, 6)
-            batch_targets_normed = torch.cat(
-                batch_target_list, dim=0).repeat(self.num_base_priors, 1, 1)
+        # (num_base_priors, num_bboxes, 6)
+        batch_targets_normed = torch.cat(
+            batch_target_list, dim=0).repeat(self.num_base_priors, 1, 1)
 
         # (num_base_priors, num_bboxes, 1)
         batch_targets_prior_inds = self.prior_inds.repeat(
             1, batch_targets_normed.shape[1])[..., None]
         # (num_base_priors, num_bboxes, 7)
-        # (img_ind, labels, bbox_cx, bbox_cy, bbox_w, bbox_h, prior_ind)
+        # (batch_index, labels, bbox_cx, bbox_cy, bbox_w, bbox_h, prior_ind) gt与anchor及anchor的index的所有组合
         batch_targets_normed = torch.cat(
             (batch_targets_normed, batch_targets_prior_inds), 2)
         return batch_targets_normed
 ```
+v5中box的编码方式是：末端卷积的输出是$t_x$、$t_y$、$t_w$、$t_h$，但是网络的输出是：$(2\sigma(t_x)-0.5)$、$(2\sigma(t_y)-0.5)$ 、$(2\sigma(t_w))^2$、$(2\sigma(t_h))^2$；所以gt编码时，对宽高的处理就只需要$b_*/a_*$了
+$$b_x=(2\sigma(t_x)-0.5)+c_x$$
+$$b_y=(2\sigma(t_y)-0.5)+c_y$$
+$$b_w=a_w (2\sigma(t_w))^2$$
+$$b_h=a_h (2\sigma(t_h))^2$$
 
 
 # YOLO_X
