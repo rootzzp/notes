@@ -369,7 +369,29 @@ $$
 计算公式是：
 $$Attention(Q,K,V)=softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 以编码器举例，Q,K,V均来自输入的embedding分别乘上可学习的矩阵$W^Q$、$W^K$、$W^V$。假设输入的embedding为矩阵$X_{m,n}$，m代表序列长度，n代表序列中每个元素的维度，则$Q=X \cdot W^Q$、$K=X \cdot W^K$、$V=X \cdot W^V$\
-其中，$W^Q等可学习矩阵的维度为n,p，则Q,K,V的维度为m,q$，$d_k$为K的维度，在这里应该是q(注意m是序列长度)
+其中，$W^Q等可学习矩阵的维度为n,p，则Q,K,V的维度为m,q$，$d_k$为K的维度，在这里应该是q(注意m是序列长度)，详细解释各个部分：
+$$\frac{QK^T}{\sqrt{d_k}}$$
+其维度为(m * m)也就是(seq_len * seq_len)，经过softmax(dim=-1,代表每行元素和为1)后，维度仍然是(m * m)，那么
+$$softmax(\frac{QK^T}{\sqrt{d_k}})V$$
+示例：假设序列长度为3，经过softmax后，序列间每个元素的相互权重如图所示，每行求和为1，而value中的每一行表示一个序列元素，二者相乘后，表示用权重加权后的每个元素的新值(0.2表示$v_0$和$v_0$之间的权重，0.3表示$v_0$和$v_1$， 0.5表示$v_0$和$v_2$，所以新的$v_0$=$0.2v_0 + 0.3v_1 + 0.5v_2$)
+$$
+\begin{pmatrix}
+0.2 & 0.3 & 0.5 \\
+. & . & . \\
+. & . & .
+\end{pmatrix} *
+\begin{pmatrix}
+v_0\\
+v_1\\
+v_2
+\end{pmatrix} =
+\begin{pmatrix}
+0.2v_0 + 0.3v_1 + 0.5v_2\\
+.\\
+.
+\end{pmatrix}
+$$
+其维度为(m * q)，为经过self_attention加权后的值，维度与输入维度保持一致
 
 ## multi head attention
 通过h个不同的线性变换对 Query、Key 和 Value 进行映射；然后，将不同的 Attention 拼接起来；最后，再进行一次线性变换
@@ -378,7 +400,42 @@ $$Attention(Q,K,V)=softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 
 每一组注意力用于将输入映射到不同的子表示空间，这使得模型可以在不同子表示空间中关注不同的位置。整个计算过程可表示为：
 $$MultiHead(Q,K,V)=Concat(head_1,head_2,...,head_h) \cdot W^o$$
-其中$head_i=Attention(Q_i,K_i,V_i)$，在多头注意力下，需要为每组注意力单独维护不同的$W^Q_i$、$W^K_i$和$W^V_i$权重矩阵，从而得到不同的$Q_i$、$K_i$和$V_i$矩阵
+其中$head_i=Attention(Q_i,K_i,V_i)$，在多头注意力下，需要为每组注意力单独维护不同的$W^Q_i$、$W^K_i$和$W^V_i$权重矩阵，从而得到不同的$Q_i$、$K_i$和$V_i$矩阵\
+实际计算过程描述：
+设序列中每个元素的维度为d_model，head数量为n_head，那么每个head负责的维度为（d_tensor = d_model / n_head）,为方便计算，直接用三个大的权重乘src得到未拆分前的Q,K,V，然后再根据维度拆分，得到$Q_i,K_i,V_i$，每个head计算attention_weight(shape:[bs,n_head,seq_len,seq_len])，那么有多少个head就有多少个不同的序列之间的相关权重，用这些权重给每个head负责的d_tensor维进行加权，最后再把n个head加权后的值组合起来
+```python
+self.w_q = nn.Linear(d_model, d_model)
+self.w_k = nn.Linear(d_model, d_model)
+self.w_v = nn.Linear(d_model, d_model)
+
+# q,k,v: [bs,seq_len,d_model],先用大权重乘
+q, k, v = self.w_q(q), self.w_k(k), self.w_v(v)
+
+# q,k,v: [bs,n_head,seq_len,d_model/n_head=d_tensor]，拆分
+# split只是对维度进行了操作
+q, k, v = self.split(q), self.split(k), self.split(v)
+
+# out [bs,n_head,seq_len,d_tensor]，每个head分别计算attention后的值
+out = self.attention(q, k, v)
+"""
+# q,k,v: [bs, n_head, seq_len, d_tensor]
+k_t = k.transpose(2, 3) # transpose
+score = (q @ k_t) / math.sqrt(d_tensor)# [bs, n_head, seq_len, seq_len]
+
+# 每个head都有一个不同的seq之间的权重，因此可以关注到不同的学习内容
+score = self.softmax(score) # [bs, n_head, seq_len, seq_len]
+
+v = score @ v # [bs, n_head, seq_len, d_tensor]
+"""
+
+# 对维度进行操作，达到concat的功能，每个head负责的d_tentor组合起来就是d_model
+# out: [bs,seq_len,d_model]
+out = self.concat(out)
+
+# 公式的最后一步，乘$W^o$
+self.output = nn.Linear(d_model, d_model)
+out = self.output(out)
+```
 
 ## FFN
 就是一个全连接前馈网络
